@@ -256,8 +256,7 @@ class FlyinChatApp(App[None]):
             content=prompt,
         )
         self._clear_selection()
-        self.query_one("#empty-state", Vertical).display = False
-        self.query_one("#message-view", Static).update(f"You\n{prompt}")
+        self._render_history()
         event.input.value = ""
         self._stream_response()
 
@@ -315,7 +314,7 @@ class FlyinChatApp(App[None]):
             case "session_select":
                 self.active_conversation_id = item.key
                 self._clear_selection()
-                self._show_panel("Session selected", item.title)
+                self._render_history()
 
     def _add_api_channel(self, command: str) -> None:
         if self.paths is None:
@@ -667,6 +666,25 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Static).update(f"{title}\n\n{body}")
 
+    def _render_history(self) -> None:
+        if self.paths is None or self.active_conversation_id is None:
+            return
+
+        history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        self.query_one("#empty-state", Vertical).display = False
+
+        if not history:
+            self.query_one("#message-view", Static).update("(No messages)")
+            return
+
+        lines: list[str] = []
+        for msg in history:
+            role_label = "You" if msg.role == "user" else "Assistant"
+            lines.append(f"{role_label}\n{msg.content}")
+
+        self.query_one("#message-view", Static).update("\n\n".join(lines))
+        self.query_one("#chat-area", Container).scroll_end(animate=False)
+
     def _mask_api_key(self, api_key: str) -> str:
         if len(api_key) <= 6:
             return "configured"
@@ -693,13 +711,18 @@ class FlyinChatApp(App[None]):
             api_messages.append({"role": msg.role, "content": msg.content})
 
         message_view = self.query_one("#message-view", Static)
-        prefix = (message_view.content or "") + "\n\nAssistant\n"
+        history_display = "\n\n".join(
+            f"{'You' if msg.role == 'user' else 'Assistant'}\n{msg.content}"
+            for msg in history
+        )
+        prefix = history_display + "\n\nAssistant\n"
 
         full_response = ""
         try:
             async for token in stream_chat_completion(channel, model, api_messages):
                 full_response += token
                 message_view.update(f"{prefix}{full_response}")
+                self.query_one("#chat-area", Container).scroll_end(animate=False)
         except Exception as error:
             message_view.update(f"{prefix}[Error: {error}]")
             return
