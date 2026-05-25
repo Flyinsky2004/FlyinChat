@@ -10,4 +10,5 @@ dist/
 build/
 .venv/
 .env
+.flyinchat/
 .DS_Store
