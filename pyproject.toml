@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flyinchat"
+version = "0.1.0"
+description = "A Textual application."
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.86.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+flyinchat = "flyinchat.app:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flyinchat"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
