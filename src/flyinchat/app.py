@@ -78,6 +78,7 @@ class FlyinChatApp(App[None]):
         self.selected_index = 0
         self.form_state: FormState | None = None
         self._last_escape_time = 0.0
+        self._suppress_menu_update = False
 
     CSS = """
     Screen {
@@ -204,7 +205,22 @@ class FlyinChatApp(App[None]):
             self._render_selection()
             return
 
+        if event.key == "tab":
+            if self.selection_items:
+                event.prevent_default()
+                prompt_input = self.query_one("#prompt-input", Input)
+                self._suppress_menu_update = True
+                prompt_input.value = self.selection_items[self.selected_index].key
+                prompt_input.action_end()
+                self.selected_index = (self.selected_index + 1) % len(self.selection_items)
+                self._render_selection()
+            return
+
     def on_input_changed(self, event: Input.Changed) -> None:
+        if self._suppress_menu_update:
+            self._suppress_menu_update = False
+            return
+
         if self.form_state is not None:
             return
 
@@ -297,7 +313,7 @@ class FlyinChatApp(App[None]):
             context="main",
             title="Commands",
             items=matches,
-            footer="Use ↑/↓ to select, Enter to open.",
+            footer="Use ↑/↓ to select, Tab to autocomplete, Enter to open.",
             target_menu=True,
         )
 
