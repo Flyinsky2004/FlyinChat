@@ -4,6 +4,8 @@ from .models import Message
 
 
 def message_to_api_format(msg: Message) -> dict | None:
+    if msg.subtype == "permission_event":
+        return None
     try:
         parsed = json.loads(msg.content)
         if isinstance(parsed, list):

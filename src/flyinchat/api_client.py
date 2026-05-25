@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -9,6 +10,8 @@ import httpx
 from flyinchat.models import LLMChannel, LLMModel
 from flyinchat.tools.convert import tools_to_api_format
 from flyinchat.tools.core import Tool
+
+logger = logging.getLogger("flyinchat.api_client")
 
 
 async def stream_chat_completion(
@@ -37,11 +40,10 @@ def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[st
             })
         elif msg["role"] == "assistant" and isinstance(msg.get("content"), list):
             text_parts: list[str] = []
-            reasoning_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
             for block in msg["content"]:
                 if block["type"] == "thinking":
-                    reasoning_parts.append(block.get("thinking", ""))
+                    continue
                 elif block["type"] == "text":
                     text_parts.append(block["text"])
                 elif block["type"] == "tool_use":
@@ -59,9 +61,7 @@ def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[st
                 converted_msg["tool_calls"] = tool_calls
                 converted_msg["content"] = text_content or None
             else:
-                converted_msg["content"] = text_content
-            if reasoning_parts:
-                converted_msg["reasoning_content"] = "\n".join(reasoning_parts)
+                converted_msg["content"] = text_content or ""
             converted.append(converted_msg)
         else:
             converted.append(msg)
@@ -92,31 +92,52 @@ async def _stream_openai_compatible(
     if tools:
         body["tools"] = tools_to_api_format(tools, "openai_compatible")
 
+    logger.debug(
+        "openai request",
+        extra={
+            "model": body["model"],
+            "message_count": len(body["messages"]),
+            "has_tools": tools is not None,
+            "thinking": body.get("thinking"),
+            "reasoning_effort": body.get("reasoning_effort"),
+        },
+    )
+
     tool_calls_by_index: dict[int, dict[str, Any]] = {}
     reasoning_parts: list[str] = []
     reasoning_done = False
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                error_body = await response.aread()
+                error_text = error_body.decode(errors="replace")[:2000]
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise httpx.HTTPStatusError(
+                        f"{e}\nAPI response: {error_text}",
+                        request=e.request,
+                        response=e.response,
+                    ) from None
             async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    if "usage" in data and data["usage"] is not None and usage_info is not None:
-                        usage_info.update(data["usage"])
+                        if "usage" in data and data["usage"] is not None and usage_info is not None:
+                            usage_info.update(data["usage"])
 
-                    choices = data.get("choices", [])
-                    if not choices:
-                        continue
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
 
-                    delta = choices[0].get("delta", {})
+                        delta = choices[0].get("delta", {})
 
                     rc = delta.get("reasoning_content", "")
                     if rc:

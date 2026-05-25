@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 
 logger = logging.getLogger("flyinchat.tools")
 
+PERMISSION_REQUIRED = "PERMISSION_REQUIRED"
+
 
 @dataclass
 class ToolResult:
@@ -22,12 +24,14 @@ class ToolResult:
 class PermissionDecision:
     allowed: bool
     reason: str = ""
+    ask_user: bool = False
 
 
 @dataclass
 class PermissionContext:
     allowed_tools: Optional[set[str]] = None
     denied_tools: set[str] = field(default_factory=set)
+    ask_tools: set[str] = field(default_factory=set)
     allowed_read_roots: List[Path] = field(default_factory=list)
     allowed_write_roots: List[Path] = field(default_factory=list)
 
@@ -90,11 +94,15 @@ class ToolExecutor:
 
     def _tool_allowed(self, tool_name: str, context: ToolContext) -> PermissionDecision:
         p = context.permission
-        if p.allowed_tools is not None and tool_name not in p.allowed_tools:
-            return PermissionDecision(False, f"tool not in allow list: {tool_name}")
         if tool_name in p.denied_tools:
             return PermissionDecision(False, f"tool denied: {tool_name}")
-        return PermissionDecision(True, "")
+        if p.allowed_tools is not None and tool_name in p.allowed_tools:
+            return PermissionDecision(True, "")
+        if tool_name in p.ask_tools:
+            return PermissionDecision(False, f"requires user approval: {tool_name}", ask_user=True)
+        if p.allowed_tools is None:
+            return PermissionDecision(True, "")
+        return PermissionDecision(False, f"tool not in allow list: {tool_name}")
 
     def execute(self, tool_name: str, tool_input: Dict[str, Any], context: ToolContext) -> ToolResult:
         t0 = time.time()
@@ -113,14 +121,75 @@ class ToolExecutor:
 
         gate = self._tool_allowed(tool_name, context)
         if not gate.allowed:
-            result = ToolResult(ok=False, content=gate.reason, error_code="PERMISSION_DENIED")
+            if gate.ask_user:
+                result = ToolResult(
+                    ok=False,
+                    content=gate.reason,
+                    error_code=PERMISSION_REQUIRED,
+                )
+                result.meta["tool_name"] = tool_name
+                result.meta["tool_input"] = tool_input
+                logger.info(
+                    "tool requires user permission",
+                    extra={"tool_name": tool_name, "reason": gate.reason},
+                )
+            else:
+                result = ToolResult(ok=False, content=gate.reason, error_code="PERMISSION_DENIED")
+                self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+                logger.warning(
+                    "tool permission denied",
+                    extra={"tool_name": tool_name, "error_code": "PERMISSION_DENIED", "reason": gate.reason},
+                )
+            return result
+
+        return self._run_tool(tool, tool_name, tool_input, context, t0)
+
+    def execute_approved(
+        self, tool_name: str, tool_input: Dict[str, Any], context: ToolContext
+    ) -> ToolResult:
+        t0 = time.time()
+        self._emit(context, "tool.start", {"tool": tool_name, "input": tool_input, "approved": True})
+
+        try:
+            tool = self.registry.get(tool_name)
+        except KeyError as e:
+            result = ToolResult(ok=False, content=str(e), error_code="TOOL_NOT_FOUND")
             self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
-            logger.warning(
-                "tool permission denied",
-                extra={"tool_name": tool_name, "error_code": "PERMISSION_DENIED", "reason": gate.reason},
+            return result
+
+        try:
+            result = tool.run(tool_input, context)
+        except Exception as e:
+            result = ToolResult(ok=False, content=f"{type(e).__name__}: {e}", error_code="TOOL_RUNTIME_ERROR")
+            self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+            logger.exception(
+                "tool runtime error",
+                extra={"tool_name": tool_name, "error_code": "TOOL_RUNTIME_ERROR"},
             )
             return result
 
+        elapsed_ms = int((time.time() - t0) * 1000)
+        result.meta["elapsed_ms"] = elapsed_ms
+        self._emit(context, "tool.complete", {"tool": tool_name, "ok": result.ok, "meta": result.meta})
+        logger.info(
+            "tool executed",
+            extra={
+                "tool_name": tool_name,
+                "ok": result.ok,
+                "error_code": result.error_code or "",
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+        return result
+
+    def _run_tool(
+        self,
+        tool: Tool,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        context: ToolContext,
+        t0: float,
+    ) -> ToolResult:
         perm = tool.requires_permission(tool_input, context)
         if not perm.allowed:
             result = ToolResult(ok=False, content=perm.reason, error_code="PERMISSION_DENIED")

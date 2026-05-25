@@ -34,10 +34,13 @@ from .storage import (
     set_primary_llm_model,
 )
 from .tools import (
+    PERMISSION_REQUIRED,
     BashTool,
     FileReadTool,
     FileWriteTool,
     PermissionContext,
+    PermissionRequest,
+    PermissionRequestStore,
     ToolContext,
     ToolExecutor,
     ToolRegistry,
@@ -115,6 +118,7 @@ class FlyinChatApp(App[None]):
         self._tool_context: ToolContext | None = None
         self._query_engine: QueryEngine | None = None
         self._compacting = False
+        self._pending_permission_request_id: str | None = None
 
     CSS = """
     Screen {
@@ -228,7 +232,8 @@ class FlyinChatApp(App[None]):
     def _init_tools(self) -> None:
         workspace = Path.cwd()
         permission = PermissionContext(
-            allowed_tools={"file_read", "file_write", "bash"},
+            allowed_tools={"file_read"},
+            ask_tools={"file_write", "bash"},
             denied_tools=set(),
             allowed_read_roots=[workspace],
             allowed_write_roots=[workspace],
@@ -289,6 +294,8 @@ class FlyinChatApp(App[None]):
                 self._render_status_bar()
             case "error":
                 pass
+            case "permission_required":
+                self._show_permission_request(event.data)
 
     @work
     async def _submit_via_engine(self, prompt: str) -> None:
@@ -330,11 +337,23 @@ class FlyinChatApp(App[None]):
             now = time.monotonic()
             if now - self._last_escape_time < 0.5:
                 self._last_escape_time = 0.0
+                if self._pending_permission_request_id:
+                    self._resolve_pending_permission("deny")
                 self._clear_input()
                 self._reset_selection()
                 return
             self._last_escape_time = now
             return
+
+        if self._pending_permission_request_id:
+            if event.key == "y":
+                event.prevent_default()
+                self._resolve_pending_permission("approve")
+                return
+            if event.key == "n" or event.key == "escape":
+                event.prevent_default()
+                self._resolve_pending_permission("deny")
+                return
 
         if not self.selection_items:
             return
@@ -392,6 +411,11 @@ class FlyinChatApp(App[None]):
             self._run_command(prompt)
             event.input.value = ""
             self.query_one("#command-menu", Static).display = False
+            return
+
+        if self._pending_permission_request_id:
+            event.input.value = ""
+            self._activate_selection()
             return
 
         if self.selection_items and (not prompt or prompt.startswith("/")):
@@ -506,6 +530,53 @@ class FlyinChatApp(App[None]):
                 self._clear_selection()
                 self._render_history()
                 self._render_status_bar()
+            case "permission_request":
+                self._resolve_pending_permission(item.key)
+
+    def _show_permission_request(self, data: dict) -> None:
+        tool_name = data.get("tool_name", "unknown")
+        risk_level = data.get("risk_level", "medium")
+        args_preview = data.get("args_preview", "")
+        reason = data.get("reason", "")
+        request_id = data.get("request_id", "")
+
+        self._pending_permission_request_id = request_id
+
+        risk_badge = {"low": "⚠️ LOW", "medium": "⚠️ MEDIUM", "high": "❗ HIGH"}.get(
+            risk_level, risk_level.upper()
+        )
+        panel_body = (
+            f"## Permission Required\n\n"
+            f"**Tool:** {tool_name}\n\n"
+            f"**Risk:** {risk_badge}\n\n"
+            f"**Args:** `{args_preview}`\n\n"
+            f"**Reason:** {reason}\n\n"
+            f"---\n"
+            f"Press **Enter** to approve, or **n** to deny"
+        )
+        self.query_one("#message-view", Markdown).update(panel_body)
+        self.query_one("#empty-state", Vertical).display = False
+
+        items = (
+            SelectionItem("approve", "Approve - allow this tool to execute", ""),
+            SelectionItem("deny", "Deny - block this tool call", ""),
+        )
+        self._set_selection(
+            context="permission_request",
+            title="⚖️ Action required",
+            items=items,
+            footer="↑/↓ select  |  Enter confirm  |  y=approve  n=deny  esc=deny",
+            target_menu=True,
+        )
+
+    def _resolve_pending_permission(self, resolution: str) -> None:
+        engine = self._query_engine
+        if engine is not None and self._pending_permission_request_id:
+            engine.resolve_permission(self._pending_permission_request_id, resolution)
+        self._pending_permission_request_id = None
+        self._clear_selection()
+        self.query_one("#command-menu", Static).display = False
+        self._set_input_prompt("Message", "Ask FlyinChat anything, or type / for commands")
 
     def _add_api_channel(self, command: str) -> None:
         if self.paths is None:
