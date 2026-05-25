@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from textual.widgets import Input, Static
+from textual.widgets import Input, Markdown, Static
 
 from flyinchat import FlyinChatApp
 from flyinchat.paths import resolve_app_paths
@@ -52,13 +52,15 @@ def test_submitting_prompt_creates_project_conversation(tmp_path: Path) -> None:
 
             conversations = list_conversations(paths.chat_db)
             messages = list_messages(paths.chat_db, conversation_id=conversations[0].id)
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
             assert conversations[0].title == "Explain this project"
             assert messages[0].role == "user"
             assert messages[0].content == "Explain this project"
-            assert "You\nExplain this project" in message_view.content
-            assert "No model configured" in message_view.content
+            assert "**You**" in raw
+            assert "Explain this project" in raw
+            assert "No model configured" in raw
             assert prompt_input.value == ""
 
     asyncio.run(run_app())
@@ -93,13 +95,14 @@ def test_api_command_shows_presets_when_empty(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
-            assert "LLM API providers" in message_view.content
-            assert "No providers configured yet" in message_view.content
-            assert "deepseek: DeepSeek" in message_view.content
-            assert "Add DeepSeek preset" in message_view.content
-            assert "Use ↑/↓ to choose an action, Enter to continue." in message_view.content
+            assert "LLM API providers" in raw
+            assert "No providers configured yet" in raw
+            assert "deepseek: DeepSeek" in raw
+            assert "Add DeepSeek preset" in raw
+            assert "Use ↑/↓ to choose an action, Enter to continue." in raw
 
     asyncio.run(run_app())
 
@@ -113,10 +116,11 @@ def test_slash_menu_can_open_api_with_enter(tmp_path: Path) -> None:
             await pilot.press("/")
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
-            assert "LLM API providers" in message_view.content
-            assert "Add DeepSeek preset" in message_view.content
+            assert "LLM API providers" in raw
+            assert "Add DeepSeek preset" in raw
 
     asyncio.run(run_app())
 
@@ -136,11 +140,12 @@ def test_api_selection_flow_adds_deepseek(tmp_path: Path) -> None:
 
             channels = list_llm_channels(paths.config_db)
             models = list_llm_models(paths.config_db, channel_id=channels[0].id)
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
             assert channels[0].name == "DeepSeek"
             assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
-            assert "API channel added" in message_view.content
+            assert "API channel added" in raw
 
     asyncio.run(run_app())
 
@@ -158,13 +163,14 @@ def test_api_add_deepseek_creates_preset_channel(tmp_path: Path) -> None:
 
             channels = list_llm_channels(paths.config_db)
             models = list_llm_models(paths.config_db, channel_id=channels[0].id)
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
             assert channels[0].name == "DeepSeek"
             assert channels[0].base_url == "https://api.deepseek.com"
             assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
-            assert "API channel added" in message_view.content
-            assert "deepseek-secret" not in message_view.content
+            assert "API channel added" in raw
+            assert "deepseek-secret" not in raw
 
     asyncio.run(run_app())
 
@@ -203,10 +209,11 @@ def test_api_page_masks_configured_keys(tmp_path: Path) -> None:
             prompt_input.value = "/api"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
-            assert "dee...et" in message_view.content
-            assert "deepseek-secret" not in message_view.content
+            assert "dee...et" in raw
+            assert "deepseek-secret" not in raw
 
     asyncio.run(run_app())
 
@@ -223,13 +230,14 @@ def test_model_command_lists_configured_models(tmp_path: Path) -> None:
             prompt_input.value = "/model"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
-            assert "Primary model" in message_view.content
-            assert "1. DeepSeek · openai_compatible" in message_view.content
-            assert "1.1 deepseek-v4-pro [primary]" in message_view.content
-            assert "1.2 deepseek-v4-flash" in message_view.content
-            assert "Use ↑/↓ to choose a model, Enter to set primary." in message_view.content
+            assert "Primary model" in raw
+            assert "1. DeepSeek · openai_compatible" in raw
+            assert "1.1 deepseek-v4-pro [primary]" in raw
+            assert "1.2 deepseek-v4-flash" in raw
+            assert "Use ↑/↓ to choose a model, Enter to set primary." in raw
 
     asyncio.run(run_app())
 
@@ -269,13 +277,14 @@ def test_model_use_selects_primary_model(tmp_path: Path) -> None:
             await pilot.press("enter")
 
             primary = get_primary_llm_model(paths.config_db)
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
             assert primary is not None
             assert primary[0].name == "DeepSeek"
             assert primary[1].name == "deepseek-v4-flash"
-            assert "Primary model selected" in message_view.content
-            assert "deepseek-v4-flash" in message_view.content
+            assert "Primary model selected" in raw
+            assert "deepseek-v4-flash" in raw
 
     asyncio.run(run_app())
 
@@ -292,10 +301,11 @@ def test_sessions_command_shows_history(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
-            assert "Session history" in message_view.content
-            assert "1. Existing chat" in message_view.content
+            assert "Session history" in raw
+            assert "1. Existing chat" in raw
 
     asyncio.run(run_app())
 
@@ -314,11 +324,12 @@ def test_clear_command_starts_new_session(tmp_path: Path) -> None:
             prompt_input.value = "/clear"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
 
             assert app.active_conversation_id is None
-            assert "New session" in message_view.content
-            assert "Ready for a new project-local conversation." in message_view.content
+            assert "New session" in raw
+            assert "Ready for a new project-local conversation." in raw
 
     asyncio.run(run_app())
 

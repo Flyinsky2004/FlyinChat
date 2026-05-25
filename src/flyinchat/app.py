@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Footer, Header, Input, Markdown, Static
 
 from .api_client import stream_chat_completion
 from .models import LLMChannel, LLMModel
@@ -116,6 +116,8 @@ class FlyinChatApp(App[None]):
 
     #message-view {
         width: 100%;
+        height: auto;
+        overflow-y: hidden;
         color: #edf2f7;
     }
 
@@ -166,7 +168,7 @@ class FlyinChatApp(App[None]):
             with Vertical(id="empty-state"):
                 yield Static(_EMPTY_LOGO, id="empty-logo")
                 yield Static("Start a project-local conversation from the prompt below.", id="empty-hint")
-            yield Static("", id="message-view")
+            yield Markdown("", id="message-view")
         with Vertical(id="composer"):
             yield Static("", id="command-menu")
             yield Static("Message", id="input-label")
@@ -664,7 +666,7 @@ class FlyinChatApp(App[None]):
 
     def _show_panel(self, title: str, body: str) -> None:
         self.query_one("#empty-state", Vertical).display = False
-        self.query_one("#message-view", Static).update(f"{title}\n\n{body}")
+        self.query_one("#message-view", Markdown).update(f"## {title}\n\n{body}")
 
     def _render_history(self) -> None:
         if self.paths is None or self.active_conversation_id is None:
@@ -674,15 +676,15 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = False
 
         if not history:
-            self.query_one("#message-view", Static).update("(No messages)")
+            self.query_one("#message-view", Markdown).update("_No messages_")
             return
 
         lines: list[str] = []
         for msg in history:
-            role_label = "You" if msg.role == "user" else "Assistant"
-            lines.append(f"{role_label}\n{msg.content}")
+            role_label = "**You**" if msg.role == "user" else "**Assistant**"
+            lines.append(f"{role_label}\n\n{msg.content}")
 
-        self.query_one("#message-view", Static).update("\n\n".join(lines))
+        self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
         self.query_one("#chat-area", Container).scroll_end(animate=False)
 
     def _mask_api_key(self, api_key: str) -> str:
@@ -697,10 +699,14 @@ class FlyinChatApp(App[None]):
 
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
-            message_view = self.query_one("#message-view", Static)
-            current = message_view.content or ""
-            message_view.update(
-                f"{current}\n\nAssistant\n[No model configured. Add one with /api, then /model.]"
+            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            history_display = "\n\n---\n\n".join(
+                f"**{'You' if msg.role == 'user' else 'Assistant'}**\n\n{msg.content}"
+                for msg in history
+            )
+            prefix = (history_display + "\n\n---\n\n") if history_display else ""
+            self.query_one("#message-view", Markdown).update(
+                f"{prefix}**Assistant**\n\n*No model configured. Add one with `/api`, then `/model`.*"
             )
             return
 
@@ -710,21 +716,21 @@ class FlyinChatApp(App[None]):
         for msg in history:
             api_messages.append({"role": msg.role, "content": msg.content})
 
-        message_view = self.query_one("#message-view", Static)
-        history_display = "\n\n".join(
-            f"{'You' if msg.role == 'user' else 'Assistant'}\n{msg.content}"
+        message_view = self.query_one("#message-view", Markdown)
+        history_display = "\n\n---\n\n".join(
+            f"**{'You' if msg.role == 'user' else 'Assistant'}**\n\n{msg.content}"
             for msg in history
         )
-        prefix = history_display + "\n\nAssistant\n"
+        prefix = (history_display + "\n\n---\n\n") if history_display else ""
 
         full_response = ""
         try:
             async for token in stream_chat_completion(channel, model, api_messages):
                 full_response += token
-                message_view.update(f"{prefix}{full_response}")
+                message_view.update(f"{prefix}**Assistant**\n\n{full_response}")
                 self.query_one("#chat-area", Container).scroll_end(animate=False)
         except Exception as error:
-            message_view.update(f"{prefix}[Error: {error}]")
+            message_view.update(f"{prefix}**Assistant**\n\n*[Error: {error}]*")
             return
 
         if full_response:
