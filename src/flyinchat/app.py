@@ -1,4 +1,5 @@
 import shlex
+import time
 from dataclasses import dataclass
 
 from textual import events
@@ -74,6 +75,7 @@ class FlyinChatApp(App[None]):
         self.selection_items: tuple[SelectionItem, ...] = ()
         self.selected_index = 0
         self.form_state: FormState | None = None
+        self._last_escape_time = 0.0
 
     CSS = """
     Screen {
@@ -175,6 +177,16 @@ class FlyinChatApp(App[None]):
         self.query_one("#prompt-input", Input).focus()
 
     def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            now = time.monotonic()
+            if now - self._last_escape_time < 0.5:
+                self._last_escape_time = 0.0
+                self._clear_input()
+                self._reset_selection()
+                return
+            self._last_escape_time = now
+            return
+
         if not self.selection_items:
             return
 
@@ -638,6 +650,13 @@ class FlyinChatApp(App[None]):
         self.selection_items = ()
         self.selected_index = 0
         self.query_one("#command-menu", Static).display = False
+
+    def _clear_input(self) -> None:
+        self.query_one("#prompt-input", Input).clear()
+
+    def _reset_selection(self) -> None:
+        self._clear_selection()
+        self._set_input_prompt("Message", "Ask FlyinChat anything, or type / for commands")
 
     def _set_input_prompt(self, label: str, placeholder: str) -> None:
         self.query_one("#input-label", Static).update(label)

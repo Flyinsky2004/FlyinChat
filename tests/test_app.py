@@ -320,3 +320,22 @@ def test_clear_command_starts_new_session(tmp_path: Path) -> None:
             assert "Ready for a new project-local conversation." in message_view.content
 
     asyncio.run(run_app())
+
+
+def test_double_escape_clears_input(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "hello world"
+
+            await pilot.press("escape")
+            assert prompt_input.value == "hello world"
+
+            await pilot.press("escape")
+            assert prompt_input.value == ""
+            assert app.selection_items == ()
+
+    asyncio.run(run_app())
