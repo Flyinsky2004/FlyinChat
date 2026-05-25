@@ -2,11 +2,12 @@ import shlex
 import time
 from dataclasses import dataclass
 
-from textual import events
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
 from textual.widgets import Footer, Header, Input, Static
 
+from .api_client import stream_chat_completion
 from .models import LLMChannel, LLMModel
 from .paths import AppPaths
 from .storage import (
@@ -20,6 +21,7 @@ from .storage import (
     list_conversations,
     list_llm_channels,
     list_llm_models,
+    list_messages,
     set_primary_llm_model,
 )
 
@@ -91,13 +93,12 @@ class FlyinChatApp(App[None]):
 
     #chat-area {
         height: 1fr;
-        align: center middle;
-        padding: 2 4;
+        padding: 1 2;
+        overflow-y: auto;
     }
 
     #empty-state {
         width: 100%;
-        max-width: 90;
         align: center middle;
     }
 
@@ -115,7 +116,6 @@ class FlyinChatApp(App[None]):
 
     #message-view {
         width: 100%;
-        max-width: 100;
         color: #edf2f7;
     }
 
@@ -259,6 +259,7 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Static).update(f"You\n{prompt}")
         event.input.value = ""
+        self._stream_response()
 
     def _run_command(self, command: str) -> None:
         if command == "/api":
@@ -670,6 +671,46 @@ class FlyinChatApp(App[None]):
         if len(api_key) <= 6:
             return "configured"
         return f"{api_key[:3]}...{api_key[-2:]}"
+
+    @work
+    async def _stream_response(self) -> None:
+        if self.paths is None or self.active_conversation_id is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            message_view = self.query_one("#message-view", Static)
+            current = message_view.content or ""
+            message_view.update(
+                f"{current}\n\nAssistant\n[No model configured. Add one with /api, then /model.]"
+            )
+            return
+
+        channel, model = primary
+        api_messages: list[dict[str, str]] = []
+        history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        for msg in history:
+            api_messages.append({"role": msg.role, "content": msg.content})
+
+        message_view = self.query_one("#message-view", Static)
+        prefix = (message_view.content or "") + "\n\nAssistant\n"
+
+        full_response = ""
+        try:
+            async for token in stream_chat_completion(channel, model, api_messages):
+                full_response += token
+                message_view.update(f"{prefix}{full_response}")
+        except Exception as error:
+            message_view.update(f"{prefix}[Error: {error}]")
+            return
+
+        if full_response:
+            add_message(
+                self.paths.chat_db,
+                conversation_id=self.active_conversation_id,
+                role="assistant",
+                content=full_response,
+            )
 
 
 def run() -> None:
