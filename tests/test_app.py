@@ -7,8 +7,10 @@ from flyinchat import FlyinChatApp
 from flyinchat.paths import resolve_app_paths
 from flyinchat.storage import (
     create_conversation,
-    create_llm_api_profile,
+    get_primary_llm_model,
     list_conversations,
+    list_llm_channels,
+    list_llm_models,
     list_messages,
 )
 
@@ -79,19 +81,12 @@ def test_slash_opens_command_menu(tmp_path: Path) -> None:
     asyncio.run(run_app())
 
 
-def test_api_command_shows_provider_settings(tmp_path: Path) -> None:
+def test_api_command_shows_presets_when_empty(tmp_path: Path) -> None:
     async def run_app() -> None:
         paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
         app = FlyinChatApp(paths=paths)
 
         async with app.run_test() as pilot:
-            create_llm_api_profile(
-                paths.config_db,
-                name="Claude",
-                provider_type="anthropic",
-                api_key="key",
-                model="claude-opus-4-7",
-            )
             prompt_input = app.query_one("#prompt-input", Input)
             prompt_input.value = "/api"
 
@@ -100,8 +95,186 @@ def test_api_command_shows_provider_settings(tmp_path: Path) -> None:
             message_view = app.query_one("#message-view", Static)
 
             assert "LLM API providers" in message_view.content
-            assert "Claude · anthropic · claude-opus-4-7" in message_view.content
-            assert prompt_input.value == ""
+            assert "No providers configured yet" in message_view.content
+            assert "deepseek: DeepSeek" in message_view.content
+            assert "Add DeepSeek preset" in message_view.content
+            assert "Use ↑/↓ to choose an action, Enter to continue." in message_view.content
+
+    asyncio.run(run_app())
+
+
+def test_slash_menu_can_open_api_with_enter(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            await pilot.press("/")
+            await pilot.press("enter")
+
+            message_view = app.query_one("#message-view", Static)
+
+            assert "LLM API providers" in message_view.content
+            assert "Add DeepSeek preset" in message_view.content
+
+    asyncio.run(run_app())
+
+
+def test_api_selection_flow_adds_deepseek(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api"
+            await pilot.press("enter")
+            await pilot.press("enter")
+            prompt_input.value = "deepseek-secret"
+            await pilot.press("enter")
+
+            channels = list_llm_channels(paths.config_db)
+            models = list_llm_models(paths.config_db, channel_id=channels[0].id)
+            message_view = app.query_one("#message-view", Static)
+
+            assert channels[0].name == "DeepSeek"
+            assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
+            assert "API channel added" in message_view.content
+
+    asyncio.run(run_app())
+
+
+def test_api_add_deepseek_creates_preset_channel(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api add deepseek deepseek-secret"
+
+            await pilot.press("enter")
+
+            channels = list_llm_channels(paths.config_db)
+            models = list_llm_models(paths.config_db, channel_id=channels[0].id)
+            message_view = app.query_one("#message-view", Static)
+
+            assert channels[0].name == "DeepSeek"
+            assert channels[0].base_url == "https://api.deepseek.com"
+            assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
+            assert "API channel added" in message_view.content
+            assert "deepseek-secret" not in message_view.content
+
+    asyncio.run(run_app())
+
+
+def test_api_add_openai_creates_channel_with_models(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api add openai Local http://localhost:11434/v1 local-secret qwen3,glm4"
+
+            await pilot.press("enter")
+
+            channels = list_llm_channels(paths.config_db)
+            models = list_llm_models(paths.config_db, channel_id=channels[0].id)
+
+            assert channels[0].name == "Local"
+            assert channels[0].provider_type == "openai_compatible"
+            assert channels[0].base_url == "http://localhost:11434/v1"
+            assert [model.name for model in models] == ["qwen3", "glm4"]
+
+    asyncio.run(run_app())
+
+
+def test_api_page_masks_configured_keys(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api add deepseek deepseek-secret"
+            await pilot.press("enter")
+            prompt_input.value = "/api"
+            await pilot.press("enter")
+
+            message_view = app.query_one("#message-view", Static)
+
+            assert "dee...et" in message_view.content
+            assert "deepseek-secret" not in message_view.content
+
+    asyncio.run(run_app())
+
+
+def test_model_command_lists_configured_models(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api add deepseek deepseek-secret"
+            await pilot.press("enter")
+            prompt_input.value = "/model"
+            await pilot.press("enter")
+
+            message_view = app.query_one("#message-view", Static)
+
+            assert "Primary model" in message_view.content
+            assert "1. DeepSeek · openai_compatible" in message_view.content
+            assert "1.1 deepseek-v4-pro [primary]" in message_view.content
+            assert "1.2 deepseek-v4-flash" in message_view.content
+            assert "Use ↑/↓ to choose a model, Enter to set primary." in message_view.content
+
+    asyncio.run(run_app())
+
+
+def test_model_selection_uses_arrow_keys(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api add deepseek deepseek-secret"
+            await pilot.press("enter")
+            prompt_input.value = "/model"
+            await pilot.press("enter")
+            await pilot.press("down")
+            await pilot.press("enter")
+
+            primary = get_primary_llm_model(paths.config_db)
+
+            assert primary is not None
+            assert primary[1].name == "deepseek-v4-flash"
+
+    asyncio.run(run_app())
+
+
+def test_model_use_selects_primary_model(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/api add deepseek deepseek-secret"
+            await pilot.press("enter")
+            prompt_input.value = "/model use 1 2"
+            await pilot.press("enter")
+
+            primary = get_primary_llm_model(paths.config_db)
+            message_view = app.query_one("#message-view", Static)
+
+            assert primary is not None
+            assert primary[0].name == "DeepSeek"
+            assert primary[1].name == "deepseek-v4-flash"
+            assert "Primary model selected" in message_view.content
+            assert "deepseek-v4-flash" in message_view.content
 
     asyncio.run(run_app())
 

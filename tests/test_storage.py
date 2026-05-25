@@ -6,13 +6,17 @@ import pytest
 from flyinchat.paths import resolve_app_paths
 from flyinchat.storage import (
     add_message,
+    create_channel_with_models,
     create_conversation,
-    create_llm_api_profile,
-    get_default_llm_api_profile,
+    create_llm_channel,
+    create_preset_channel,
+    get_primary_llm_model,
     initialize_storage,
     list_conversations,
-    list_llm_api_profiles,
+    list_llm_channels,
+    list_llm_models,
     list_messages,
+    set_primary_llm_model,
 )
 
 
@@ -38,46 +42,97 @@ def test_initialize_storage_creates_databases(tmp_path: Path) -> None:
     assert paths.chat_db.exists()
 
 
-def test_llm_api_profiles_support_openai_compatible_and_anthropic(tmp_path: Path) -> None:
+def test_openai_compatible_channel_can_have_multiple_models(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
 
-    openai_profile = create_llm_api_profile(
+    channel, models = create_channel_with_models(
         paths.config_db,
-        name="Local OpenAI Compatible",
+        name="Local",
         provider_type="openai_compatible",
         base_url="http://localhost:11434/v1",
         api_key="local-key",
-        model="qwen3",
-        is_default=True,
+        model_names=("qwen3", "glm4"),
     )
-    anthropic_profile = create_llm_api_profile(
+
+    assert list_llm_channels(paths.config_db) == [channel]
+    assert [model.name for model in models] == ["qwen3", "glm4"]
+    assert list_llm_models(paths.config_db, channel_id=channel.id) == models
+    assert models[0].is_default is True
+    assert models[1].is_default is False
+    assert get_primary_llm_model(paths.config_db) == (channel, models[0])
+
+
+def test_setting_primary_model_moves_default(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    channel, models = create_channel_with_models(
+        paths.config_db,
+        name="Local",
+        provider_type="openai_compatible",
+        base_url="http://localhost:11434/v1",
+        api_key="local-key",
+        model_names=("qwen3", "glm4"),
+    )
+
+    selected_channel, selected_model = set_primary_llm_model(paths.config_db, model_id=models[1].id)
+    updated_models = list_llm_models(paths.config_db, channel_id=channel.id)
+
+    assert selected_channel == channel
+    assert selected_model.name == "glm4"
+    assert get_primary_llm_model(paths.config_db) == (selected_channel, selected_model)
+    assert [model.is_default for model in updated_models] == [True, False]
+    assert updated_models[0].name == "glm4"
+
+
+def test_anthropic_channel_can_have_models(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+
+    channel, models = create_channel_with_models(
         paths.config_db,
         name="Claude",
         provider_type="anthropic",
         api_key="anthropic-key",
-        model="claude-opus-4-7",
-        is_default=True,
+        model_names=("claude-opus-4-7", "claude-sonnet-4-6"),
     )
 
-    profiles = list_llm_api_profiles(paths.config_db)
+    assert channel.provider_type == "anthropic"
+    assert channel.base_url is None
+    assert [model.name for model in models] == ["claude-opus-4-7", "claude-sonnet-4-6"]
 
-    assert [profile.id for profile in profiles] == [anthropic_profile.id, openai_profile.id]
-    assert profiles[0].is_default is True
-    assert profiles[1].is_default is False
-    assert get_default_llm_api_profile(paths.config_db) == anthropic_profile
-    assert openai_profile.base_url == "http://localhost:11434/v1"
+
+def test_deepseek_preset_uses_only_api_key(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+
+    channel, models = create_preset_channel(paths.config_db, preset_id="deepseek", api_key="deepseek-key")
+
+    assert channel.name == "DeepSeek"
+    assert channel.provider_type == "openai_compatible"
+    assert channel.base_url == "https://api.deepseek.com"
+    assert channel.api_key == "deepseek-key"
+    assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
 
 
 def test_invalid_provider_type_is_rejected(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
 
     with pytest.raises(ValueError, match="Unsupported provider_type"):
-        create_llm_api_profile(
+        create_llm_channel(
             paths.config_db,
             name="Bad",
             provider_type="unknown",
             api_key="key",
-            model="model",
+        )
+
+
+def test_empty_model_list_is_rejected(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+
+    with pytest.raises(ValueError, match="At least one model"):
+        create_channel_with_models(
+            paths.config_db,
+            name="Bad",
+            provider_type="anthropic",
+            api_key="key",
+            model_names=(),
         )
 
 

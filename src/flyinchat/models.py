@@ -2,13 +2,21 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class LLMApiProfile:
+class LLMChannel:
     id: str
     name: str
     provider_type: str
     base_url: str | None
     api_key: str
-    model: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class LLMModel:
+    id: str
+    channel_id: str
+    name: str
     is_default: bool
     created_at: str
     updated_at: str
