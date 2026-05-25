@@ -1,45 +1,97 @@
+from __future__ import annotations
+
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
-from .models import LLMChannel, LLMModel
+from flyinchat.models import LLMChannel, LLMModel
+from flyinchat.tools.convert import tools_to_api_format
+from flyinchat.tools.core import Tool
 
 
 async def stream_chat_completion(
     channel: LLMChannel,
     model: LLMModel,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     usage_info: dict | None = None,
-) -> AsyncIterator[str]:
+    tools: list[Tool] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     if channel.provider_type == "anthropic":
-        async for token in _stream_anthropic(channel, model, messages, usage_info):
-            yield token
+        async for event in _stream_anthropic(channel, model, messages, usage_info, tools):
+            yield event
     else:
-        async for token in _stream_openai_compatible(channel, model, messages, usage_info):
-            yield token
+        async for event in _stream_openai_compatible(channel, model, messages, usage_info, tools):
+            yield event
+
+
+def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg["role"] == "tool":
+            converted.append({
+                "role": "tool",
+                "tool_call_id": msg.get("tool_use_id", ""),
+                "content": msg["content"],
+            })
+        elif msg["role"] == "assistant" and isinstance(msg.get("content"), list):
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
+            for block in msg["content"]:
+                if block["type"] == "thinking":
+                    reasoning_parts.append(block.get("thinking", ""))
+                elif block["type"] == "text":
+                    text_parts.append(block["text"])
+                elif block["type"] == "tool_use":
+                    tool_calls.append({
+                        "id": block["id"],
+                        "type": "function",
+                        "function": {
+                            "name": block["name"],
+                            "arguments": json.dumps(block["input"]),
+                        },
+                    })
+            converted_msg: dict[str, Any] = {"role": "assistant", "content": "\n".join(text_parts)}
+            if reasoning_parts:
+                converted_msg["reasoning_content"] = "\n".join(reasoning_parts)
+            if tool_calls:
+                converted_msg["tool_calls"] = tool_calls
+            converted.append(converted_msg)
+        else:
+            converted.append(msg)
+    return converted
 
 
 async def _stream_openai_compatible(
     channel: LLMChannel,
     model: LLMModel,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     usage_info: dict | None = None,
-) -> AsyncIterator[str]:
+    tools: list[Tool] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     base = channel.base_url.rstrip("/") if channel.base_url else ""
     url = f"{base}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {channel.api_key}",
         "Content-Type": "application/json",
     }
-    body: dict = {
+    body: dict[str, Any] = {
         "model": model.name,
-        "messages": messages,
+        "messages": _convert_messages_for_openai(messages),
         "stream": True,
         "stream_options": {"include_usage": True},
         "reasoning_effort": model.reasoning_effort,
         "thinking": {"type": "enabled" if model.thinking_enabled else "disabled"},
     }
+    if tools:
+        body["tools"] = tools_to_api_format(tools, "openai_compatible")
+
+    tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    reasoning_parts: list[str] = []
+    reasoning_done = False
+
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             response.raise_for_status()
@@ -50,24 +102,105 @@ async def _stream_openai_compatible(
                         break
                     try:
                         data = json.loads(data_str)
-                        if "usage" in data and data["usage"] is not None and usage_info is not None:
-                            usage_info.update(data["usage"])
-                        choices = data.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
                     except json.JSONDecodeError:
                         continue
+
+                    if "usage" in data and data["usage"] is not None and usage_info is not None:
+                        usage_info.update(data["usage"])
+
+                    choices = data.get("choices", [])
+                    if not choices:
+                        continue
+
+                    delta = choices[0].get("delta", {})
+
+                    rc = delta.get("reasoning_content", "")
+                    if rc:
+                        reasoning_parts.append(rc)
+
+                    content = delta.get("content", "")
+                    if content:
+                        if not reasoning_done and reasoning_parts:
+                            reasoning_done = True
+                            yield {"type": "reasoning", "content": "".join(reasoning_parts)}
+                        yield {"type": "text", "content": content}
+
+                    tc_list = delta.get("tool_calls", [])
+                    for tc in tc_list:
+                        idx = tc.get("index", 0)
+                        if idx not in tool_calls_by_index:
+                            tool_calls_by_index[idx] = {"name": "", "id": "", "arguments": ""}
+                        entry = tool_calls_by_index[idx]
+                        if tc.get("id"):
+                            entry["id"] = tc["id"]
+                        if tc.get("function", {}).get("name"):
+                            entry["name"] = tc["function"]["name"]
+                        if tc.get("function", {}).get("arguments"):
+                            entry["arguments"] += tc["function"]["arguments"]
+
+                    # try to finalize complete tool calls
+                    finished_indices = []
+                    for idx, entry in tool_calls_by_index.items():
+                        if entry["arguments"]:
+                            try:
+                                parsed = json.loads(entry["arguments"])
+                                yield {
+                                    "type": "tool_use",
+                                    "id": entry["id"],
+                                    "name": entry["name"],
+                                    "input": parsed,
+                                }
+                                finished_indices.append(idx)
+                            except json.JSONDecodeError:
+                                pass
+                    for idx in finished_indices:
+                        del tool_calls_by_index[idx]
+
+    # flush reasoning that wasn't yielded (no text, just tool calls)
+    if reasoning_parts and not reasoning_done:
+        yield {"type": "reasoning", "content": "".join(reasoning_parts)}
+
+    # flush remaining incomplete tool calls
+    for entry in tool_calls_by_index.values():
+        if entry["name"] and entry["arguments"]:
+            try:
+                parsed = json.loads(entry["arguments"])
+                yield {"type": "tool_use", "id": entry["id"], "name": entry["name"], "input": parsed}
+            except json.JSONDecodeError:
+                pass
+
+
+def _convert_messages_for_anthropic(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
+    system_prompt: str | None = None
+    converted: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system_prompt = msg["content"]
+        elif msg["role"] == "tool":
+            converted.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_use_id", ""),
+                    "content": msg["content"],
+                }],
+            })
+        else:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                converted.append({"role": msg["role"], "content": content})
+            else:
+                converted.append({"role": msg["role"], "content": content})
+    return system_prompt, converted
 
 
 async def _stream_anthropic(
     channel: LLMChannel,
     model: LLMModel,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     usage_info: dict | None = None,
-) -> AsyncIterator[str]:
+    tools: list[Tool] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     url = f"{channel.base_url.rstrip('/')}/v1/messages" if channel.base_url else "https://api.anthropic.com/v1/messages"
     headers = {
         "x-api-key": channel.api_key,
@@ -75,15 +208,9 @@ async def _stream_anthropic(
         "Content-Type": "application/json",
     }
 
-    system_prompt: str | None = None
-    anthropic_messages: list[dict[str, str]] = []
-    for msg in messages:
-        if msg["role"] == "system":
-            system_prompt = msg["content"]
-        else:
-            anthropic_messages.append({"role": msg["role"], "content": msg["content"]})
+    system_prompt, anthropic_messages = _convert_messages_for_anthropic(messages)
 
-    body: dict = {
+    body: dict[str, Any] = {
         "model": model.name,
         "max_tokens": 4096,
         "messages": anthropic_messages,
@@ -93,6 +220,10 @@ async def _stream_anthropic(
         body["system"] = system_prompt
     if model.thinking_enabled:
         body["thinking"] = {"type": "enabled"}
+    if tools:
+        body["tools"] = tools_to_api_format(tools, "anthropic")
+
+    blocks: dict[int, dict[str, Any]] = {}
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -102,20 +233,72 @@ async def _stream_anthropic(
                     data_str = line[6:]
                     try:
                         data = json.loads(data_str)
-                        event_type = data.get("type", "")
-                        if event_type == "message_start" and usage_info is not None:
-                            msg_data = data.get("message", {})
-                            usage = msg_data.get("usage", {})
-                            if usage:
-                                usage_info["input_tokens"] = usage.get("input_tokens", 0)
-                        elif event_type == "message_delta" and usage_info is not None:
-                            usage = data.get("usage", {})
-                            output_tokens = usage.get("output_tokens", 0)
-                            if output_tokens:
-                                usage_info["output_tokens"] = output_tokens
-                        elif event_type == "content_block_delta":
-                            text = data.get("delta", {}).get("text", "")
-                            if text:
-                                yield text
                     except json.JSONDecodeError:
                         continue
+
+                    event_type = data.get("type", "")
+
+                    if event_type == "message_start" and usage_info is not None:
+                        msg_data = data.get("message", {})
+                        usage = msg_data.get("usage", {})
+                        if usage:
+                            usage_info["input_tokens"] = usage.get("input_tokens", 0)
+
+                    elif event_type == "message_delta" and usage_info is not None:
+                        usage = data.get("usage", {})
+                        output_tokens = usage.get("output_tokens", 0)
+                        if output_tokens:
+                            usage_info["output_tokens"] = output_tokens
+
+                    elif event_type == "content_block_start":
+                        block = data.get("content_block", {})
+                        idx = data.get("index", 0)
+                        bt = block.get("type", "")
+                        if bt == "thinking":
+                            blocks[idx] = {"type": "thinking", "thinking": "", "signature": ""}
+                        elif bt == "tool_use":
+                            blocks[idx] = {
+                                "type": "tool_use",
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "json_fragments": [],
+                            }
+
+                    elif event_type == "content_block_delta":
+                        delta = data.get("delta", {})
+                        idx = data.get("index", 0)
+                        dt = delta.get("type", "")
+                        if dt == "text_delta":
+                            yield {"type": "text", "content": delta.get("text", "")}
+                        elif dt == "thinking_delta":
+                            if idx in blocks:
+                                blocks[idx]["thinking"] += delta.get("thinking", "")
+                        elif dt == "signature_delta":
+                            if idx in blocks:
+                                blocks[idx]["signature"] = delta.get("signature", "")
+                        elif dt == "input_json_delta":
+                            if idx in blocks:
+                                blocks[idx]["json_fragments"].append(delta.get("partial_json", ""))
+
+                    elif event_type == "content_block_stop":
+                        idx = data.get("index", 0)
+                        if idx in blocks:
+                            block = blocks.pop(idx)
+                            if block["type"] == "thinking":
+                                yield {
+                                    "type": "thinking",
+                                    "thinking": block["thinking"],
+                                    "signature": block["signature"],
+                                }
+                            elif block["type"] == "tool_use":
+                                json_str = "".join(block["json_fragments"])
+                                try:
+                                    parsed = json.loads(json_str)
+                                    yield {
+                                        "type": "tool_use",
+                                        "id": block["id"],
+                                        "name": block["name"],
+                                        "input": parsed,
+                                    }
+                                except json.JSONDecodeError:
+                                    pass

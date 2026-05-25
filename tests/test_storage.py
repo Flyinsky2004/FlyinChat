@@ -105,8 +105,8 @@ def test_deepseek_preset_uses_only_api_key(tmp_path: Path) -> None:
     channel, models = create_preset_channel(paths.config_db, preset_id="deepseek", api_key="deepseek-key")
 
     assert channel.name == "DeepSeek"
-    assert channel.provider_type == "anthropic"
-    assert channel.base_url == "https://api.deepseek.com/anthropic"
+    assert channel.provider_type == "openai_compatible"
+    assert channel.base_url == "https://api.deepseek.com"
     assert channel.api_key == "deepseek-key"
     assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
 
