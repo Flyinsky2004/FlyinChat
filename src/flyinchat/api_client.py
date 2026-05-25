@@ -10,12 +10,13 @@ async def stream_chat_completion(
     channel: LLMChannel,
     model: LLMModel,
     messages: list[dict[str, str]],
+    usage_info: dict | None = None,
 ) -> AsyncIterator[str]:
     if channel.provider_type == "anthropic":
-        async for token in _stream_anthropic(channel, model, messages):
+        async for token in _stream_anthropic(channel, model, messages, usage_info):
             yield token
     else:
-        async for token in _stream_openai_compatible(channel, model, messages):
+        async for token in _stream_openai_compatible(channel, model, messages, usage_info):
             yield token
 
 
@@ -23,6 +24,7 @@ async def _stream_openai_compatible(
     channel: LLMChannel,
     model: LLMModel,
     messages: list[dict[str, str]],
+    usage_info: dict | None = None,
 ) -> AsyncIterator[str]:
     base = channel.base_url.rstrip("/") if channel.base_url else ""
     url = f"{base}/v1/chat/completions"
@@ -30,10 +32,13 @@ async def _stream_openai_compatible(
         "Authorization": f"Bearer {channel.api_key}",
         "Content-Type": "application/json",
     }
-    body = {
+    body: dict = {
         "model": model.name,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
+        "reasoning_effort": model.reasoning_effort,
+        "thinking": {"type": "enabled" if model.thinking_enabled else "disabled"},
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -45,6 +50,8 @@ async def _stream_openai_compatible(
                         break
                     try:
                         data = json.loads(data_str)
+                        if "usage" in data and data["usage"] is not None and usage_info is not None:
+                            usage_info.update(data["usage"])
                         choices = data.get("choices", [])
                         if choices:
                             delta = choices[0].get("delta", {})
@@ -59,8 +66,9 @@ async def _stream_anthropic(
     channel: LLMChannel,
     model: LLMModel,
     messages: list[dict[str, str]],
+    usage_info: dict | None = None,
 ) -> AsyncIterator[str]:
-    url = "https://api.anthropic.com/v1/messages"
+    url = f"{channel.base_url.rstrip('/')}/v1/messages" if channel.base_url else "https://api.anthropic.com/v1/messages"
     headers = {
         "x-api-key": channel.api_key,
         "anthropic-version": "2023-06-01",
@@ -83,6 +91,8 @@ async def _stream_anthropic(
     }
     if system_prompt:
         body["system"] = system_prompt
+    if model.thinking_enabled:
+        body["thinking"] = {"type": "enabled"}
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -92,7 +102,18 @@ async def _stream_anthropic(
                     data_str = line[6:]
                     try:
                         data = json.loads(data_str)
-                        if data.get("type") == "content_block_delta":
+                        event_type = data.get("type", "")
+                        if event_type == "message_start" and usage_info is not None:
+                            msg_data = data.get("message", {})
+                            usage = msg_data.get("usage", {})
+                            if usage:
+                                usage_info["input_tokens"] = usage.get("input_tokens", 0)
+                        elif event_type == "message_delta" and usage_info is not None:
+                            usage = data.get("usage", {})
+                            output_tokens = usage.get("output_tokens", 0)
+                            if output_tokens:
+                                usage_info["output_tokens"] = output_tokens
+                        elif event_type == "content_block_delta":
                             text = data.get("delta", {}).get("text", "")
                             if text:
                                 yield text

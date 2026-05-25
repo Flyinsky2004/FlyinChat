@@ -18,16 +18,21 @@ class LLMModel:
     channel_id: str
     name: str
     is_default: bool
-    created_at: str
-    updated_at: str
+    thinking_enabled: bool = True
+    reasoning_effort: str = "high"
+    context_window: int = 125_000
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
 class Conversation:
     id: str
     title: str
-    created_at: str
-    updated_at: str
+    total_output_tokens: int = 0
+    last_input_tokens: int = 0
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)

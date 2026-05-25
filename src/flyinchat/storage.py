@@ -19,15 +19,17 @@ class ProviderPreset:
     provider_type: str
     base_url: str | None
     model_names: tuple[str, ...]
+    context_window: int = 125_000
 
 
 PROVIDER_PRESETS = {
     "deepseek": ProviderPreset(
         id="deepseek",
         name="DeepSeek",
-        provider_type="openai_compatible",
-        base_url="https://api.deepseek.com",
+        provider_type="anthropic",
+        base_url="https://api.deepseek.com/anthropic",
         model_names=("deepseek-v4-pro", "deepseek-v4-flash"),
+        context_window=1_000_000,
     )
 }
 
@@ -77,6 +79,9 @@ def initialize_config_db(path: Path) -> None:
                 channel_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+                thinking_enabled INTEGER NOT NULL DEFAULT 1,
+                reasoning_effort TEXT NOT NULL DEFAULT 'high',
+                context_window INTEGER NOT NULL DEFAULT 125000,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 FOREIGN KEY (channel_id) REFERENCES llm_channels (id) ON DELETE CASCADE,
@@ -91,6 +96,17 @@ def initialize_config_db(path: Path) -> None:
             WHERE is_default = 1
             """
         )
+        _migrate_config_db(connection)
+
+
+def _migrate_config_db(connection: sqlite3.Connection) -> None:
+    for column, default_val in [("thinking_enabled", 1), ("reasoning_effort", "'high'"), ("context_window", 125000)]:
+        try:
+            connection.execute(
+                f"ALTER TABLE llm_models ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default_val}"
+            )
+        except sqlite3.OperationalError:
+            pass
 
 
 def initialize_chat_db(path: Path) -> None:
@@ -100,6 +116,8 @@ def initialize_chat_db(path: Path) -> None:
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                last_input_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             )
@@ -123,6 +141,13 @@ def initialize_chat_db(path: Path) -> None:
             ON messages (conversation_id, created_at)
             """
         )
+        for column, default_val in [("total_output_tokens", 0), ("last_input_tokens", 0)]:
+            try:
+                connection.execute(
+                    f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default_val}"
+                )
+            except sqlite3.OperationalError:
+                pass
 
 
 def create_llm_channel(
@@ -160,6 +185,7 @@ def create_channel_with_models(
     api_key: str,
     model_names: Sequence[str],
     base_url: str | None = None,
+    context_window: int = 125_000,
 ) -> tuple[LLMChannel, list[LLMModel]]:
     cleaned_models = _clean_model_names(model_names)
     channel_id = str(uuid4())
@@ -177,10 +203,10 @@ def create_channel_with_models(
         for index, model_name in enumerate(cleaned_models):
             connection.execute(
                 """
-                INSERT INTO llm_models (id, channel_id, name, is_default)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO llm_models (id, channel_id, name, is_default, thinking_enabled, reasoning_effort, context_window)
+                VALUES (?, ?, ?, ?, 1, 'high', ?)
                 """,
-                (str(uuid4()), channel_id, model_name, int(index == 0 and not has_primary_model)),
+                (str(uuid4()), channel_id, model_name, int(index == 0 and not has_primary_model), context_window),
             )
         channel_row = connection.execute(
             "SELECT * FROM llm_channels WHERE id = ?",
@@ -210,10 +236,11 @@ def create_preset_channel(config_db: Path, *, preset_id: str, api_key: str) -> t
         base_url=preset.base_url,
         api_key=api_key,
         model_names=preset.model_names,
+        context_window=preset.context_window,
     )
 
 
-def add_llm_model(config_db: Path, *, channel_id: str, name: str, is_default: bool = False) -> LLMModel:
+def add_llm_model(config_db: Path, *, channel_id: str, name: str, is_default: bool = False, context_window: int = 125_000) -> LLMModel:
     if not name.strip():
         raise ValueError("Model name is required")
 
@@ -226,10 +253,10 @@ def add_llm_model(config_db: Path, *, channel_id: str, name: str, is_default: bo
             )
         connection.execute(
             """
-            INSERT INTO llm_models (id, channel_id, name, is_default)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO llm_models (id, channel_id, name, is_default, thinking_enabled, reasoning_effort, context_window)
+            VALUES (?, ?, ?, ?, 1, 'high', ?)
             """,
-            (model_id, channel_id, name, int(is_default)),
+            (model_id, channel_id, name, int(is_default), context_window),
         )
         row = connection.execute(
             "SELECT * FROM llm_models WHERE id = ?",
@@ -282,6 +309,9 @@ def get_primary_llm_model(config_db: Path) -> tuple[LLMChannel, LLMModel] | None
                 m.id AS model_id,
                 m.name AS model_name,
                 m.is_default,
+                m.thinking_enabled,
+                m.reasoning_effort,
+                m.context_window,
                 m.created_at AS model_created_at,
                 m.updated_at AS model_updated_at
             FROM llm_models m
@@ -325,6 +355,9 @@ def set_primary_llm_model(config_db: Path, *, model_id: str) -> tuple[LLMChannel
                 m.id AS model_id,
                 m.name AS model_name,
                 m.is_default,
+                m.thinking_enabled,
+                m.reasoning_effort,
+                m.context_window,
                 m.created_at AS model_created_at,
                 m.updated_at AS model_updated_at
             FROM llm_models m
@@ -335,6 +368,38 @@ def set_primary_llm_model(config_db: Path, *, model_id: str) -> tuple[LLMChannel
         ).fetchone()
 
     return _channel_model_from_joined_row(joined_row)
+
+
+def set_model_thinking(config_db: Path, *, model_id: str, enabled: bool) -> LLMModel:
+    with _connect(config_db) as connection:
+        connection.execute(
+            "UPDATE llm_models SET thinking_enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (int(enabled), model_id),
+        )
+        row = connection.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,)).fetchone()
+    return _model_from_row(row)
+
+
+def set_model_reasoning_effort(config_db: Path, *, model_id: str, effort: str) -> LLMModel:
+    if effort not in ("low", "medium", "high"):
+        raise ValueError(f"Invalid reasoning effort: {effort}. Must be low, medium, or high.")
+    with _connect(config_db) as connection:
+        connection.execute(
+            "UPDATE llm_models SET reasoning_effort = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (effort, model_id),
+        )
+        row = connection.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,)).fetchone()
+    return _model_from_row(row)
+
+
+def set_model_context_window(config_db: Path, *, model_id: str, context_window: int) -> LLMModel:
+    with _connect(config_db) as connection:
+        connection.execute(
+            "UPDATE llm_models SET context_window = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (context_window, model_id),
+        )
+        row = connection.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,)).fetchone()
+    return _model_from_row(row)
 
 
 def create_conversation(chat_db: Path, *, title: str) -> Conversation:
@@ -352,6 +417,17 @@ def create_conversation(chat_db: Path, *, title: str) -> Conversation:
             (conversation_id,),
         ).fetchone()
 
+    return _conversation_from_row(row)
+
+
+def get_conversation(chat_db: Path, *, conversation_id: str) -> Conversation | None:
+    with _connect(chat_db) as connection:
+        row = connection.execute(
+            "SELECT * FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+    if row is None:
+        return None
     return _conversation_from_row(row)
 
 
@@ -393,6 +469,21 @@ def add_message(chat_db: Path, *, conversation_id: str, role: str, content: str)
         ).fetchone()
 
     return _message_from_row(row)
+
+
+def update_conversation_usage(
+    chat_db: Path, *, conversation_id: str, total_output_tokens: int, last_input_tokens: int
+) -> None:
+    with _connect(chat_db) as connection:
+        connection.execute(
+            """
+            UPDATE conversations
+            SET total_output_tokens = ?, last_input_tokens = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (total_output_tokens, last_input_tokens, conversation_id),
+        )
 
 
 def list_messages(chat_db: Path, *, conversation_id: str) -> list[Message]:
@@ -450,6 +541,9 @@ def _model_from_row(row: sqlite3.Row) -> LLMModel:
         channel_id=row["channel_id"],
         name=row["name"],
         is_default=bool(row["is_default"]),
+        thinking_enabled=bool(row["thinking_enabled"]),
+        reasoning_effort=row["reasoning_effort"],
+        context_window=row["context_window"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -471,6 +565,9 @@ def _channel_model_from_joined_row(row: sqlite3.Row) -> tuple[LLMChannel, LLMMod
             channel_id=row["channel_id"],
             name=row["model_name"],
             is_default=bool(row["is_default"]),
+            thinking_enabled=bool(row["thinking_enabled"]),
+            reasoning_effort=row["reasoning_effort"],
+            context_window=row["context_window"],
             created_at=row["model_created_at"],
             updated_at=row["model_updated_at"],
         ),
@@ -481,6 +578,8 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
     return Conversation(
         id=row["id"],
         title=row["title"],
+        total_output_tokens=row["total_output_tokens"],
+        last_input_tokens=row["last_input_tokens"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

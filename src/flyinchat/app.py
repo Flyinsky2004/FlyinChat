@@ -16,13 +16,18 @@ from .storage import (
     create_channel_with_models,
     create_conversation,
     create_preset_channel,
+    get_conversation,
     get_primary_llm_model,
     initialize_storage,
     list_conversations,
     list_llm_channels,
     list_llm_models,
     list_messages,
+    set_model_context_window,
+    set_model_reasoning_effort,
+    set_model_thinking,
     set_primary_llm_model,
+    update_conversation_usage,
 )
 
 _EMPTY_LOGO = """
@@ -52,8 +57,17 @@ class FormState:
 _COMMANDS = (
     SelectionItem("/api", "/api", "LLM API provider settings"),
     SelectionItem("/model", "/model", "Choose the primary model"),
+    SelectionItem("/thinking", "/thinking", "Toggle reasoning thinking mode on/off"),
+    SelectionItem("/reasoning", "/reasoning", "Set reasoning effort level (low/medium/high)"),
+    SelectionItem("/1M", "/1M", "Toggle 1M context window mode (125K ↔ 1M)"),
     SelectionItem("/sessions", "/sessions", "Open project session history"),
     SelectionItem("/clear", "/clear", "Start a new session"),
+)
+
+_REASONING_LEVELS = (
+    SelectionItem("low", "low", "Fast, minimal reasoning"),
+    SelectionItem("medium", "medium", "Balanced reasoning"),
+    SelectionItem("high", "high", "Deep, thorough reasoning"),
 )
 
 _API_ACTIONS = (
@@ -79,6 +93,9 @@ class FlyinChatApp(App[None]):
         self.form_state: FormState | None = None
         self._last_escape_time = 0.0
         self._suppress_menu_update = False
+        self._last_usage: dict = {}
+        self._total_output_tokens = 0
+        self._last_input_tokens = 0
 
     CSS = """
     Screen {
@@ -153,6 +170,13 @@ class FlyinChatApp(App[None]):
         border: round #7dd3fc;
     }
 
+    #status-bar {
+        height: 1;
+        padding: 0 2;
+        margin-top: 1;
+        color: #6b7d99;
+    }
+
     Footer {
         background: #0f1724;
         color: #8b9bb4;
@@ -174,10 +198,12 @@ class FlyinChatApp(App[None]):
             yield Static("", id="command-menu")
             yield Static("Message", id="input-label")
             yield Input(placeholder="Ask FlyinChat anything, or type / for commands", id="prompt-input")
+            yield Static("", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
+        self._render_status_bar()
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":
@@ -266,6 +292,10 @@ class FlyinChatApp(App[None]):
         if self.active_conversation_id is None:
             conversation = create_conversation(self.paths.chat_db, title=prompt[:80])
             self.active_conversation_id = conversation.id
+            self._last_usage = {}
+            self._total_output_tokens = 0
+            self._last_input_tokens = 0
+            self._render_status_bar()
 
         add_message(
             self.paths.chat_db,
@@ -293,6 +323,12 @@ class FlyinChatApp(App[None]):
             return
 
         match command:
+            case "/thinking":
+                self._show_thinking_settings()
+            case "/reasoning":
+                self._show_reasoning_settings()
+            case "/1M":
+                self._toggle_context_mode()
             case "/sessions":
                 self._show_sessions()
             case "/clear":
@@ -329,10 +365,23 @@ class FlyinChatApp(App[None]):
                 self._start_api_form(item.key)
             case "model_select":
                 self._set_primary_model_by_id(item.key)
+            case "thinking_toggle":
+                self._toggle_thinking(item.key)
+            case "reasoning_select":
+                self._set_reasoning_effort(item.key)
             case "session_select":
                 self.active_conversation_id = item.key
+                conv = get_conversation(self.paths.chat_db, conversation_id=item.key)
+                if conv is not None:
+                    self._total_output_tokens = conv.total_output_tokens
+                    self._last_input_tokens = conv.last_input_tokens
+                else:
+                    self._total_output_tokens = 0
+                    self._last_input_tokens = 0
+                self._last_usage = {}
                 self._clear_selection()
                 self._render_history()
+                self._render_status_bar()
 
     def _add_api_channel(self, command: str) -> None:
         if self.paths is None:
@@ -471,9 +520,13 @@ class FlyinChatApp(App[None]):
 
     def _start_new_session(self) -> None:
         self.active_conversation_id = None
+        self._last_usage = {}
+        self._total_output_tokens = 0
+        self._last_input_tokens = 0
         self._clear_selection()
         self.query_one("#empty-state", Vertical).display = True
         self._show_panel("New session", "Ready for a new project-local conversation.")
+        self._render_status_bar()
 
     def _start_api_form(self, kind: str) -> None:
         self._clear_selection()
@@ -580,10 +633,111 @@ class FlyinChatApp(App[None]):
         )
 
     def _show_primary_model_selected(self, channel: LLMChannel, model: LLMModel) -> None:
+        self._last_usage = {}
         self._show_panel(
             "Primary model selected",
             f"{channel.name}\n{model.name}",
         )
+        self._render_status_bar()
+
+    def _show_thinking_settings(self) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            self._show_panel("Thinking mode", "No primary model configured. Set one with /model.")
+            return
+
+        channel, model = primary
+        status = "enabled" if model.thinking_enabled else "disabled"
+        options = (
+            SelectionItem("on", "Enable thinking", "Turn reasoning thinking on"),
+            SelectionItem("off", "Disable thinking", "Turn reasoning thinking off"),
+        )
+        self._set_selection(
+            context="thinking_toggle",
+            title="Thinking mode",
+            items=options,
+            header=f"{channel.name} / {model.name}\nThinking is currently {status}",
+            footer="Use ↑/↓ to choose, Enter to toggle.",
+        )
+
+    def _toggle_thinking(self, action: str) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            return
+
+        model = primary[1]
+        enabled = action == "on"
+        updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=enabled)
+        self._clear_selection()
+        status = "enabled" if updated.thinking_enabled else "disabled"
+        self._show_panel("Thinking mode", f"Thinking is now {status} for {primary[0].name} / {updated.name}")
+        self._render_status_bar()
+
+    def _show_reasoning_settings(self) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            self._show_panel("Reasoning effort", "No primary model configured. Set one with /model.")
+            return
+
+        channel, model = primary
+        self._set_selection(
+            context="reasoning_select",
+            title="Reasoning effort",
+            items=_REASONING_LEVELS,
+            header=f"{channel.name} / {model.name}\nCurrent level: {model.reasoning_effort}",
+            footer="Use ↑/↓ to choose, Enter to set.",
+        )
+
+    def _set_reasoning_effort(self, level: str) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            return
+
+        model = primary[1]
+        updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
+        self._clear_selection()
+        self._show_panel(
+            "Reasoning effort",
+            f"Level set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}",
+        )
+        self._render_status_bar()
+
+    def _toggle_context_mode(self) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            self._show_panel("Context window", "No primary model configured. Set one with /model.")
+            return
+
+        channel, model = primary
+        new_size = 125_000 if model.context_window >= 1_000_000 else 1_000_000
+        updated = set_model_context_window(self.paths.config_db, model_id=model.id, context_window=new_size)
+        self._clear_selection()
+        label = "1M" if new_size == 1_000_000 else "125K"
+        self._show_panel(
+            "Context window",
+            f"Context window set to **{label}** for {channel.name} / {updated.name}",
+        )
+        self._render_status_bar()
 
     def _format_channels(self, channels: list[LLMChannel]) -> str:
         if self.paths is None:
@@ -684,6 +838,41 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update(f"## {title}\n\n{body}")
 
+    def _render_status_bar(self) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self.query_one("#status-bar", Static).update("No model configured — use /api then /model")
+            return
+
+        channel, model = primary
+        parts = [f"{channel.name} / {model.name}"]
+
+        think_label = "ON" if model.thinking_enabled else "OFF"
+        parts.append(f"Think: {think_label}")
+        parts.append(f"Effort: {model.reasoning_effort}")
+        ctx_label = "1M" if model.context_window >= 1_000_000 else f"{model.context_window // 1000}K"
+        parts.append(f"Ctx: {ctx_label}")
+
+        if self.active_conversation_id is not None:
+            msgs = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            parts.append(f"{len(msgs)} msgs")
+
+            inp = self._last_input_tokens
+            if inp or self._total_output_tokens:
+                ctx = model.context_window
+                if ctx and inp:
+                    pct = (inp / ctx) * 100
+                    parts.append(f"↑{inp} ↓{self._total_output_tokens} ({pct:.1f}%)")
+                else:
+                    parts.append(f"↑{inp} ↓{self._total_output_tokens}")
+        else:
+            parts.append("No conversation")
+
+        self.query_one("#status-bar", Static).update("  |  ".join(parts))
+
     def _render_history(self) -> None:
         if self.paths is None or self.active_conversation_id is None:
             return
@@ -740,14 +929,30 @@ class FlyinChatApp(App[None]):
         prefix = (history_display + "\n\n---\n\n") if history_display else ""
 
         full_response = ""
+        usage_info: dict = {}
         try:
-            async for token in stream_chat_completion(channel, model, api_messages):
+            async for token in stream_chat_completion(channel, model, api_messages, usage_info):
                 full_response += token
                 message_view.update(f"{prefix}**Assistant**\n\n{full_response}")
                 self.query_one("#chat-area", Container).scroll_end(animate=False)
         except Exception as error:
             message_view.update(f"{prefix}**Assistant**\n\n*[Error: {error}]*")
             return
+        finally:
+            self._last_usage = usage_info
+            if channel.provider_type == "anthropic":
+                self._total_output_tokens += usage_info.get("output_tokens", 0)
+                self._last_input_tokens = usage_info.get("input_tokens", 0)
+            else:
+                self._total_output_tokens += usage_info.get("completion_tokens", 0)
+                self._last_input_tokens = usage_info.get("prompt_tokens", 0)
+            update_conversation_usage(
+                self.paths.chat_db,
+                conversation_id=self.active_conversation_id,
+                total_output_tokens=self._total_output_tokens,
+                last_input_tokens=self._last_input_tokens,
+            )
+            self._render_status_bar()
 
         if full_response:
             add_message(

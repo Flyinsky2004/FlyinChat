@@ -167,7 +167,7 @@ def test_api_add_deepseek_creates_preset_channel(tmp_path: Path) -> None:
             raw = message_view._markdown
 
             assert channels[0].name == "DeepSeek"
-            assert channels[0].base_url == "https://api.deepseek.com"
+            assert channels[0].base_url == "https://api.deepseek.com/anthropic"
             assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
             assert "API channel added" in raw
             assert "deepseek-secret" not in raw
@@ -234,7 +234,7 @@ def test_model_command_lists_configured_models(tmp_path: Path) -> None:
             raw = message_view._markdown
 
             assert "Primary model" in raw
-            assert "1. DeepSeek · openai_compatible" in raw
+            assert "1. DeepSeek · anthropic" in raw
             assert "1.1 deepseek-v4-pro [primary]" in raw
             assert "1.2 deepseek-v4-flash" in raw
             assert "Use ↑/↓ to choose a model, Enter to set primary." in raw
