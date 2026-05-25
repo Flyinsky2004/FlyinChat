@@ -60,7 +60,7 @@ def test_submitting_prompt_creates_project_conversation(tmp_path: Path) -> None:
             assert messages[0].content == "Explain this project"
             assert "**You**" in raw
             assert "Explain this project" in raw
-            assert "No model configured" in raw
+            assert "Error" in raw
             assert prompt_input.value == ""
 
     asyncio.run(run_app())

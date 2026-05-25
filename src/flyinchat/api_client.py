@@ -53,11 +53,15 @@ def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[st
                             "arguments": json.dumps(block["input"]),
                         },
                     })
-            converted_msg: dict[str, Any] = {"role": "assistant", "content": "\n".join(text_parts)}
-            if reasoning_parts:
-                converted_msg["reasoning_content"] = "\n".join(reasoning_parts)
+            text_content = "\n".join(text_parts) if text_parts else ""
+            converted_msg: dict[str, Any] = {"role": "assistant"}
             if tool_calls:
                 converted_msg["tool_calls"] = tool_calls
+                converted_msg["content"] = text_content or None
+            else:
+                converted_msg["content"] = text_content
+            if reasoning_parts:
+                converted_msg["reasoning_content"] = "\n".join(reasoning_parts)
             converted.append(converted_msg)
         else:
             converted.append(msg)

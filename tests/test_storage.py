@@ -6,12 +6,16 @@ import pytest
 from flyinchat.paths import resolve_app_paths
 from flyinchat.storage import (
     add_message,
+    add_message_with_turn,
     create_channel_with_models,
     create_conversation,
     create_llm_channel,
     create_preset_channel,
     get_primary_llm_model,
+    get_turn_messages,
+    increment_turn,
     initialize_storage,
+    list_active_messages,
     list_conversations,
     list_llm_channels,
     list_llm_models,
@@ -177,3 +181,121 @@ def test_message_requires_existing_conversation(tmp_path: Path) -> None:
             role="user",
             content="Hello",
         )
+
+
+def test_message_default_fields(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    conv = create_conversation(paths.chat_db, title="test")
+
+    msg = add_message(paths.chat_db, conversation_id=conv.id, role="user", content="hello")
+    assert msg.turn_id == ""
+    assert msg.subtype == "normal"
+    assert msg.tool_call_id is None
+    assert msg.meta == "{}"
+
+
+def test_add_message_with_turn(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    conv = create_conversation(paths.chat_db, title="test")
+
+    msg = add_message_with_turn(
+        paths.chat_db,
+        conversation_id=conv.id,
+        turn_id="turn_1_abc",
+        role="user",
+        subtype="normal",
+        content="hello",
+    )
+    assert msg.turn_id == "turn_1_abc"
+    assert msg.subtype == "normal"
+
+
+def test_get_turn_messages(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    conv = create_conversation(paths.chat_db, title="test")
+
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t1", role="user",
+        content="msg1",
+    )
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t1", role="assistant",
+        content="msg2",
+    )
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t2", role="user",
+        content="msg3",
+    )
+
+    t1_msgs = get_turn_messages(paths.chat_db, conversation_id=conv.id, turn_id="t1")
+    assert len(t1_msgs) == 2
+    t2_msgs = get_turn_messages(paths.chat_db, conversation_id=conv.id, turn_id="t2")
+    assert len(t2_msgs) == 1
+
+
+def test_increment_turn(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    conv = create_conversation(paths.chat_db, title="test")
+    assert conv.current_turn == 0
+
+    t1 = increment_turn(paths.chat_db, conversation_id=conv.id)
+    assert t1 == 1
+    t2 = increment_turn(paths.chat_db, conversation_id=conv.id)
+    assert t2 == 2
+
+
+def test_tool_result_message(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    conv = create_conversation(paths.chat_db, title="test")
+
+    msg = add_message_with_turn(
+        paths.chat_db,
+        conversation_id=conv.id,
+        turn_id="t1",
+        role="tool",
+        subtype="tool_result",
+        content='{"tool_use_id":"tu_001","content":"result"}',
+        tool_call_id="tu_001",
+        meta='{"tool_name":"file_read","ok":true}',
+    )
+    assert msg.subtype == "tool_result"
+    assert msg.tool_call_id == "tu_001"
+
+
+def test_list_active_messages_with_subtype_boundary(tmp_path: Path) -> None:
+    paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+    conv = create_conversation(paths.chat_db, title="test")
+
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t1", role="user",
+        content="msg1",
+    )
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t1", role="assistant",
+        content="msg2",
+    )
+    # Compact boundary with subtype
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t1", role="system",
+        subtype="compact_boundary",
+        content='{"type":"compact_boundary","boundary_id":"cb1"}',
+    )
+    add_message_with_turn(
+        paths.chat_db, conversation_id=conv.id, turn_id="t2", role="user",
+        content="msg3",
+    )
+
+    active = list_active_messages(paths.chat_db, conversation_id=conv.id)
+    assert len(active) == 2  # boundary + msg3
+    assert active[0].subtype == "compact_boundary"
+
+
+def test_migration_idempotent(tmp_path: Path) -> None:
+    paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+    initialize_storage(paths)
+    # Running again should not fail
+    initialize_storage(paths)
+    # Should be able to use new fields
+    conv = create_conversation(paths.chat_db, title="test")
+    assert conv.current_turn == 0
+    assert conv.status == "active"

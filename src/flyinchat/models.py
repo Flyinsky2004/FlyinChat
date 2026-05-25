@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ class Conversation:
     total_output_tokens: int = 0
     last_input_tokens: int = 0
     compacted_message_count: int = 0
+    current_turn: int = 0
+    status: str = "active"
     created_at: str = ""
     updated_at: str = ""
 
@@ -43,3 +45,29 @@ class Message:
     role: str
     content: str
     created_at: str
+    turn_id: str = ""
+    subtype: str = "normal"
+    tool_call_id: str | None = None
+    meta: str = "{}"
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    turn_id: str
+    status: str  # "completed" | "error" | "cancelled" | "max_rounds"
+    final_text: str = ""
+    tool_rounds: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionConfigSnapshot:
+    model_name: str
+    channel_name: str
+    provider_type: str
+    thinking_enabled: bool = True
+    reasoning_effort: str = "high"
+    context_window: int = 125_000
+    max_tool_rounds: int = 10

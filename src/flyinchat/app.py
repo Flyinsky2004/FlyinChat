@@ -1,4 +1,3 @@
-import json
 import shlex
 import time
 from dataclasses import dataclass
@@ -9,10 +8,12 @@ from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
-from .api_client import stream_chat_completion
 from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
+from .logging_config import configure_logging
+from .message_utils import message_to_api_format, message_to_display
 from .models import LLMChannel, LLMModel
 from .paths import AppPaths
+from .query_engine import QueryEngine, QueryEngineConfig, TurnEvent
 from .storage import (
     PROVIDER_PRESETS,
     add_message,
@@ -31,9 +32,9 @@ from .storage import (
     set_model_reasoning_effort,
     set_model_thinking,
     set_primary_llm_model,
-    update_conversation_usage,
 )
 from .tools import (
+    BashTool,
     FileReadTool,
     FileWriteTool,
     PermissionContext,
@@ -112,6 +113,7 @@ class FlyinChatApp(App[None]):
         self._tool_registry: ToolRegistry | None = None
         self._tool_executor: ToolExecutor | None = None
         self._tool_context: ToolContext | None = None
+        self._query_engine: QueryEngine | None = None
         self._compacting = False
 
     CSS = """
@@ -226,7 +228,7 @@ class FlyinChatApp(App[None]):
     def _init_tools(self) -> None:
         workspace = Path.cwd()
         permission = PermissionContext(
-            allowed_tools={"file_read", "file_write"},
+            allowed_tools={"file_read", "file_write", "bash"},
             denied_tools=set(),
             allowed_read_roots=[workspace],
             allowed_write_roots=[workspace],
@@ -240,57 +242,88 @@ class FlyinChatApp(App[None]):
         self._tool_registry = ToolRegistry()
         self._tool_registry.register(FileReadTool())
         self._tool_registry.register(FileWriteTool())
+        self._tool_registry.register(BashTool())
         self._tool_executor = ToolExecutor(self._tool_registry)
+        if self._query_engine is not None:
+            self._query_engine.configure_tools(
+                self._tool_registry, self._tool_executor, self._tool_context
+            )
+
+    def _ensure_query_engine(self) -> QueryEngine:
+        if self._query_engine is None and self.paths is not None and self.active_conversation_id is not None:
+            config = QueryEngineConfig(
+                paths=self.paths,
+                conversation_id=self.active_conversation_id,
+            )
+            self._query_engine = QueryEngine(config)
+            if self._tool_registry is not None and self._tool_executor is not None and self._tool_context is not None:
+                self._query_engine.configure_tools(
+                    self._tool_registry, self._tool_executor, self._tool_context
+                )
+        if self._query_engine is None:
+            raise RuntimeError("QueryEngine not initialized")
+        return self._query_engine
+
+    async def _handle_turn_event(self, event: TurnEvent) -> None:
+        match event.event_type:
+            case "turn_start":
+                self.query_one("#empty-state", Vertical).display = False
+            case "thinking":
+                pass
+            case "text":
+                pass
+            case "tool_use":
+                pass
+            case "tool_result":
+                pass
+            case "compact_start":
+                self._compacting = True
+                self._render_status_bar()
+            case "compact_end":
+                self._compacting = False
+                self._render_status_bar()
+            case "turn_end":
+                self._last_input_tokens = event.data.get("input_tokens", 0)
+                self._total_output_tokens += event.data.get("output_tokens", 0)
+                self._render_history()
+                self._render_status_bar()
+            case "error":
+                pass
+
+    @work
+    async def _submit_via_engine(self, prompt: str) -> None:
+        if self.paths is None:
+            return
+        engine = self._ensure_query_engine()
+        result = await engine.submit_message(
+            prompt, on_event=self._handle_turn_event, user_message_persisted=True
+        )
+        if result.status == "error" and result.error:
+            conv = get_conversation(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            if conv is not None:
+                self._last_input_tokens = conv.last_input_tokens
+                self._total_output_tokens = conv.total_output_tokens
+            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            history_display = "\n\n---\n\n".join(
+                f"**{'You' if msg.role == 'user' else 'Assistant'}**\n\n{self._message_to_display(msg)}"
+                for msg in history
+            )
+            prefix = (history_display + "\n\n---\n\n") if history_display else ""
+            self.query_one("#message-view", Markdown).update(
+                f"{prefix}**Assistant**\n\n*[Error: {result.error}]*"
+            )
+            self._render_status_bar()
+            return
+        self._render_history()
+        self._render_status_bar()
 
     @staticmethod
     def _message_to_api_format(msg) -> dict | None:
-        try:
-            parsed = json.loads(msg.content)
-            if isinstance(parsed, list):
-                return {"role": msg.role, "content": parsed}
-            if isinstance(parsed, dict):
-                if "tool_use_id" in parsed:
-                    return {"role": "tool", "tool_use_id": parsed["tool_use_id"], "content": parsed["content"]}
-                if parsed.get("type") == "compact_boundary":
-                    return None
-                if parsed.get("type") == "compact_summary":
-                    return {"role": "system", "content": parsed.get("summary", "")}
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return {"role": msg.role, "content": msg.content}
+        return message_to_api_format(msg)
 
     @staticmethod
     def _message_to_display(msg) -> str:
-        try:
-            parsed = json.loads(msg.content)
-            if isinstance(parsed, list):
-                parts: list[str] = []
-                for block in parsed:
-                    if block["type"] == "thinking":
-                        think_text = block.get("thinking", "")
-                        preview = think_text[:200] + "..." if len(think_text) > 200 else think_text
-                        parts.append(f"\n\n💭 **thinking**\n```\n{preview}\n```\n")
-                    elif block["type"] == "text":
-                        parts.append(block["text"])
-                    elif block["type"] == "tool_use":
-                        parts.append(
-                            f"\n\n🔧 **{block['name']}**\n```json\n"
-                            f"{json.dumps(block['input'], indent=2)}\n```\n"
-                        )
-                return "".join(parts)
-            if isinstance(parsed, dict):
-                if parsed.get("type") == "compact_boundary":
-                    before_k = parsed.get("tokens_before", 0) // 1000
-                    after_k = parsed.get("tokens_after", 0) // 1000
-                    strategy = parsed.get("strategy", "")
-                    return f"\n\n---\n\n📦 **Conversation Compacted** ({strategy})\n{before_k}K → {after_k}K tokens\n"
-                if parsed.get("type") == "compact_summary":
-                    return f"\n\n📋 **Summary of earlier conversation:**\n\n{parsed.get('summary', '')}\n"
-                if "tool_use_id" in parsed:
-                    return f"```\n{parsed['content']}\n```"
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return msg.content
+        return message_to_display(msg)
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":
@@ -382,18 +415,20 @@ class FlyinChatApp(App[None]):
             self._last_usage = {}
             self._total_output_tokens = 0
             self._last_input_tokens = 0
+            self._query_engine = None
             self._render_status_bar()
 
-        add_message(
-            self.paths.chat_db,
-            conversation_id=self.active_conversation_id,
-            role="user",
-            content=prompt,
-        )
         self._clear_selection()
-        self._render_history()
+        if self.paths is not None and self.active_conversation_id is not None:
+            add_message(
+                self.paths.chat_db,
+                conversation_id=self.active_conversation_id,
+                role="user",
+                content=prompt,
+            )
+            self._render_history()
         event.input.value = ""
-        self._stream_response()
+        self._submit_via_engine(prompt)
 
     def _run_command(self, command: str) -> None:
         if command == "/api":
@@ -1057,201 +1092,6 @@ class FlyinChatApp(App[None]):
             return "configured"
         return f"{api_key[:3]}...{api_key[-2:]}"
 
-    @work
-    async def _stream_response(self) -> None:
-        if self.paths is None or self.active_conversation_id is None:
-            return
-
-        primary = get_primary_llm_model(self.paths.config_db)
-        if primary is None:
-            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-            history_display = "\n\n---\n\n".join(
-                f"**{'You' if msg.role == 'user' else 'Assistant'}**\n\n{self._message_to_display(msg)}"
-                for msg in history
-            )
-            prefix = (history_display + "\n\n---\n\n") if history_display else ""
-            self.query_one("#message-view", Markdown).update(
-                f"{prefix}**Assistant**\n\n*No model configured. Add one with `/api`, then `/model`.*"
-            )
-            return
-
-        channel, model = primary
-        active_messages = list_active_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-        api_messages: list[dict] = [
-            formatted for msg in active_messages
-            if (formatted := self._message_to_api_format(msg)) is not None
-        ]
-
-        tool_list = list(self._tool_registry.tools) if self._tool_registry else None
-        message_view = self.query_one("#message-view", Markdown)
-        self.query_one("#empty-state", Vertical).display = False
-
-        policy = CompactionPolicy.from_model(model)
-        engine = CompactionEngine(self.paths.chat_db, self.active_conversation_id)
-        self._compacting = True
-        self._render_status_bar()
-        result = await engine.compact_if_needed_async(
-            active_messages, api_messages, policy, force=False, model=model, channel=channel
-        )
-        self._compacting = False
-        self._render_status_bar()
-        if result.applied:
-            active_messages = list(result.messages)
-            api_messages = [
-                formatted for msg in active_messages
-                if (formatted := self._message_to_api_format(msg)) is not None
-            ]
-
-        max_tool_rounds = 10
-        compact_retry_remaining = 1
-        for _ in range(max_tool_rounds):
-            text_content = ""
-            display_text = ""
-            thinking_blocks: list[dict] = []
-            tool_uses: list[dict] = []
-            usage_info: dict = {}
-
-            current_history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-            history_lines: list[str] = []
-            for msg in current_history:
-                if msg.role == "tool":
-                    history_lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
-                elif msg.role == "system":
-                    history_lines.append(f"**System**\n\n{self._message_to_display(msg)}")
-                else:
-                    role_label = "**You**" if msg.role == "user" else "**Assistant**"
-                    history_lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
-            history_display = "\n\n---\n\n".join(history_lines)
-            prefix = (history_display + "\n\n---\n\n") if history_display else ""
-
-            try:
-                async for event in stream_chat_completion(channel, model, api_messages, usage_info, tool_list):
-                    if event["type"] == "thinking":
-                        thinking_blocks.append(event)
-                        think_preview = event["thinking"][:200] + "..." if len(event["thinking"]) > 200 else event["thinking"]
-                        display_text += (
-                            f"\n\n💭 **thinking**\n```\n{think_preview}\n```\n"
-                        )
-                    elif event["type"] == "reasoning":
-                        thinking_blocks.append({"thinking": event["content"], "signature": ""})
-                        preview = event["content"][:200] + "..." if len(event["content"]) > 200 else event["content"]
-                        display_text += (
-                            f"\n\n💭 **reasoning**\n```\n{preview}\n```\n"
-                        )
-                    elif event["type"] == "text":
-                        text_content += event["content"]
-                        display_text += event["content"]
-                    elif event["type"] == "tool_use":
-                        tool_uses.append(event)
-                        display_text += (
-                            f"\n\n🔧 **{event['name']}**\n"
-                            f"```json\n{json.dumps(event['input'], indent=2)}\n```\n"
-                        )
-                    message_view.update(f"{prefix}**Assistant**\n\n{display_text}")
-                    self.query_one("#chat-area", Container).scroll_end(animate=False)
-            except Exception as error:
-                error_str = str(error)
-                if compact_retry_remaining > 0 and (
-                    "context_length_exceeded" in error_str
-                    or "413" in error_str
-                    or "too long" in error_str.lower()
-                    or "maximum context length" in error_str.lower()
-                ):
-                    compact_retry_remaining -= 1
-                    message_view.update(f"{prefix}**Assistant**\n\n⏳ *Compacting conversation...*\n")
-                    all_messages = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-                    reactive_result = await engine.reactive_compact(
-                        all_messages, api_messages, policy, model, channel, reason=error_str,
-                    )
-                    if reactive_result.applied:
-                        active_messages = list(reactive_result.messages)
-                        api_messages[:] = [
-                            formatted for msg in active_messages
-                            if (formatted := self._message_to_api_format(msg)) is not None
-                        ]
-                        continue
-                message_view.update(f"{prefix}**Assistant**\n\n*[Error: {error}]*")
-                return
-            finally:
-                self._last_usage = usage_info
-                if channel.provider_type == "anthropic":
-                    self._total_output_tokens += usage_info.get("output_tokens", 0)
-                    self._last_input_tokens = usage_info.get("input_tokens", 0)
-                else:
-                    self._total_output_tokens += usage_info.get("completion_tokens", 0)
-                    self._last_input_tokens = usage_info.get("prompt_tokens", 0)
-                update_conversation_usage(
-                    self.paths.chat_db,
-                    conversation_id=self.active_conversation_id,
-                    total_output_tokens=self._total_output_tokens,
-                    last_input_tokens=self._last_input_tokens,
-                )
-                self._render_status_bar()
-
-            if not tool_uses:
-                if text_content:
-                    add_message(
-                        self.paths.chat_db,
-                        conversation_id=self.active_conversation_id,
-                        role="assistant",
-                        content=text_content,
-                    )
-                break
-
-            assistant_content: list[dict] = []
-            for th in thinking_blocks:
-                assistant_content.append({
-                    "type": "thinking",
-                    "thinking": th["thinking"],
-                    "signature": th["signature"],
-                })
-            if text_content:
-                assistant_content.append({"type": "text", "text": text_content})
-            for tu in tool_uses:
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tu["id"],
-                    "name": tu["name"],
-                    "input": tu["input"],
-                })
-
-            add_message(
-                self.paths.chat_db,
-                conversation_id=self.active_conversation_id,
-                role="assistant",
-                content=json.dumps(assistant_content),
-            )
-            api_messages.append({"role": "assistant", "content": assistant_content})
-
-            for tu in tool_uses:
-                if self._tool_executor is None or self._tool_context is None:
-                    result_text = "Tool system not initialized"
-                    add_message(
-                        self.paths.chat_db,
-                        conversation_id=self.active_conversation_id,
-                        role="tool",
-                        content=json.dumps({"tool_use_id": tu["id"], "content": result_text}),
-                    )
-                    api_messages.append({"role": "tool", "tool_use_id": tu["id"], "content": result_text})
-                    continue
-
-                result = self._tool_executor.execute(tu["name"], tu["input"], self._tool_context)
-                add_message(
-                    self.paths.chat_db,
-                    conversation_id=self.active_conversation_id,
-                    role="tool",
-                    content=json.dumps({"tool_use_id": tu["id"], "content": result.content}),
-                )
-                api_messages.append({"role": "tool", "tool_use_id": tu["id"], "content": result.content})
-
-                icon = "✅" if result.ok else "❌"
-                display_text += f"\n\n{icon} **{tu['name']}** result:\n```\n{result.content}\n```\n"
-
-            message_view.update(f"{prefix}**Assistant**\n\n{display_text}")
-            self.query_one("#chat-area", Container).scroll_end(animate=False)
-
-        self._render_history()
-
-
 def run() -> None:
+    configure_logging()
     FlyinChatApp().run()

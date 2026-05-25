@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from .models import Conversation, LLMChannel, LLMModel, Message
+from .models import Conversation, LLMChannel, LLMModel, Message, TurnResult
 from .paths import AppPaths, resolve_app_paths
 
 _PROVIDER_TYPES = frozenset({"openai_compatible", "anthropic"})
@@ -142,10 +142,38 @@ def initialize_chat_db(path: Path) -> None:
             ON messages (conversation_id, created_at)
             """
         )
-        for column, default_val in [("total_output_tokens", 0), ("last_input_tokens", 0), ("compacted_message_count", 0)]:
+        for column, default_val in [
+            ("total_output_tokens", 0),
+            ("last_input_tokens", 0),
+            ("compacted_message_count", 0),
+            ("current_turn", 0),
+        ]:
             try:
                 connection.execute(
                     f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default_val}"
+                )
+            except sqlite3.OperationalError:
+                pass
+        try:
+            connection.execute(
+                "ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        for column, default_val in [
+            ("turn_id", "''"),
+            ("subtype", "'normal'"),
+        ]:
+            try:
+                connection.execute(
+                    f"ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT {default_val}"
+                )
+            except sqlite3.OperationalError:
+                pass
+        for column in ("tool_call_id", "meta"):
+            try:
+                connection.execute(
+                    f"ALTER TABLE messages ADD COLUMN {column} TEXT"
                 )
             except sqlite3.OperationalError:
                 pass
@@ -441,7 +469,17 @@ def list_conversations(chat_db: Path) -> list[Conversation]:
     return [_conversation_from_row(row) for row in rows]
 
 
-def add_message(chat_db: Path, *, conversation_id: str, role: str, content: str) -> Message:
+def add_message(
+    chat_db: Path,
+    *,
+    conversation_id: str,
+    role: str,
+    content: str,
+    turn_id: str = "",
+    subtype: str = "normal",
+    tool_call_id: str | None = None,
+    meta: str = "{}",
+) -> Message:
     if role not in _MESSAGE_ROLES:
         raise ValueError(f"Unsupported message role: {role}")
     if not content:
@@ -451,10 +489,10 @@ def add_message(chat_db: Path, *, conversation_id: str, role: str, content: str)
     with _connect(chat_db) as connection:
         connection.execute(
             """
-            INSERT INTO messages (id, conversation_id, role, content)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO messages (id, conversation_id, role, content, turn_id, subtype, tool_call_id, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, conversation_id, role, content),
+            (message_id, conversation_id, role, content, turn_id, subtype, tool_call_id, meta),
         )
         connection.execute(
             """
@@ -509,6 +547,62 @@ def update_message_content(chat_db: Path, *, message_id: str, content: str) -> N
         )
 
 
+def add_message_with_turn(
+    chat_db: Path,
+    *,
+    conversation_id: str,
+    turn_id: str,
+    role: str,
+    subtype: str = "normal",
+    content: str,
+    tool_call_id: str | None = None,
+    meta: str = "{}",
+) -> Message:
+    return add_message(
+        chat_db,
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        turn_id=turn_id,
+        subtype=subtype,
+        tool_call_id=tool_call_id,
+        meta=meta,
+    )
+
+
+def get_turn_messages(
+    chat_db: Path, *, conversation_id: str, turn_id: str
+) -> list[Message]:
+    with _connect(chat_db) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM messages
+            WHERE conversation_id = ? AND turn_id = ?
+            ORDER BY created_at ASC
+            """,
+            (conversation_id, turn_id),
+        ).fetchall()
+    return [_message_from_row(row) for row in rows]
+
+
+def increment_turn(chat_db: Path, *, conversation_id: str) -> int:
+    with _connect(chat_db) as connection:
+        connection.execute(
+            """
+            UPDATE conversations
+            SET current_turn = current_turn + 1,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        )
+        row = connection.execute(
+            "SELECT current_turn FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+    return row["current_turn"] if row else 0
+
+
 def update_conversation_compacted_count(
     chat_db: Path, *, conversation_id: str, count: int
 ) -> None:
@@ -529,10 +623,14 @@ def list_active_messages(chat_db: Path, *, conversation_id: str) -> list[Message
     all_msgs = list_messages(chat_db, conversation_id=conversation_id)
     boundary_idx: int | None = None
     for i, msg in enumerate(all_msgs):
+        if msg.subtype == "compact_boundary":
+            boundary_idx = i
+            break
         try:
             parsed = json.loads(msg.content)
             if isinstance(parsed, dict) and parsed.get("type") == "compact_boundary":
                 boundary_idx = i
+                break
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -541,12 +639,16 @@ def list_active_messages(chat_db: Path, *, conversation_id: str) -> list[Message
 
     start = boundary_idx
     if start > 0:
-        try:
-            prev = json.loads(all_msgs[start - 1].content)
-            if isinstance(prev, dict) and prev.get("type") == "compact_summary":
-                start = boundary_idx - 1
-        except (json.JSONDecodeError, TypeError):
-            pass
+        prev = all_msgs[start - 1]
+        if prev.subtype == "compact_summary":
+            start = boundary_idx - 1
+        else:
+            try:
+                parsed = json.loads(prev.content)
+                if isinstance(parsed, dict) and parsed.get("type") == "compact_summary":
+                    start = boundary_idx - 1
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     return all_msgs[start:]
 
@@ -632,6 +734,8 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         total_output_tokens=row["total_output_tokens"],
         last_input_tokens=row["last_input_tokens"],
         compacted_message_count=row["compacted_message_count"],
+        current_turn=row["current_turn"],
+        status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -644,4 +748,8 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         role=row["role"],
         content=row["content"],
         created_at=row["created_at"],
+        turn_id=row["turn_id"],
+        subtype=row["subtype"],
+        tool_call_id=row["tool_call_id"],
+        meta=row["meta"],
     )

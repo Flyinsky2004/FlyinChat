@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol
+
+logger = logging.getLogger("flyinchat.tools")
 
 
 @dataclass
@@ -102,18 +105,30 @@ class ToolExecutor:
         except KeyError as e:
             result = ToolResult(ok=False, content=str(e), error_code="TOOL_NOT_FOUND")
             self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+            logger.warning(
+                "tool not found",
+                extra={"tool_name": tool_name, "error_code": "TOOL_NOT_FOUND"},
+            )
             return result
 
         gate = self._tool_allowed(tool_name, context)
         if not gate.allowed:
             result = ToolResult(ok=False, content=gate.reason, error_code="PERMISSION_DENIED")
             self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+            logger.warning(
+                "tool permission denied",
+                extra={"tool_name": tool_name, "error_code": "PERMISSION_DENIED", "reason": gate.reason},
+            )
             return result
 
         perm = tool.requires_permission(tool_input, context)
         if not perm.allowed:
             result = ToolResult(ok=False, content=perm.reason, error_code="PERMISSION_DENIED")
             self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+            logger.warning(
+                "tool input permission denied",
+                extra={"tool_name": tool_name, "error_code": "PERMISSION_DENIED", "reason": perm.reason},
+            )
             return result
 
         try:
@@ -121,10 +136,24 @@ class ToolExecutor:
         except Exception as e:
             result = ToolResult(ok=False, content=f"{type(e).__name__}: {e}", error_code="TOOL_RUNTIME_ERROR")
             self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+            logger.exception(
+                "tool runtime error",
+                extra={"tool_name": tool_name, "error_code": "TOOL_RUNTIME_ERROR"},
+            )
             return result
 
-        result.meta["elapsed_ms"] = int((time.time() - t0) * 1000)
+        elapsed_ms = int((time.time() - t0) * 1000)
+        result.meta["elapsed_ms"] = elapsed_ms
         self._emit(context, "tool.complete", {"tool": tool_name, "ok": result.ok, "meta": result.meta})
+        logger.info(
+            "tool executed",
+            extra={
+                "tool_name": tool_name,
+                "ok": result.ok,
+                "error_code": result.error_code or "",
+                "elapsed_ms": elapsed_ms,
+            },
+        )
         return result
 
 
