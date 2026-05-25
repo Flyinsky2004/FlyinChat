@@ -1,7 +1,10 @@
+import os
 import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
 from textual import events, work
 from textual.app import App, ComposeResult
