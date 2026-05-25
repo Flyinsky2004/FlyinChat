@@ -302,3 +302,72 @@ async def _stream_anthropic(
                                     }
                                 except json.JSONDecodeError:
                                     pass
+
+
+async def chat_completion(
+    channel: LLMChannel,
+    model: LLMModel,
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int = 2048,
+) -> str:
+    """Non-streaming chat completion for summarization."""
+    if channel.provider_type == "anthropic":
+        return await _anthropic_chat(channel, model, messages, max_tokens)
+    return await _openai_chat(channel, model, messages, max_tokens)
+
+
+async def _openai_chat(
+    channel: LLMChannel,
+    model: LLMModel,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+) -> str:
+    base = channel.base_url.rstrip("/") if channel.base_url else ""
+    url = f"{base}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {channel.api_key}",
+        "Content-Type": "application/json",
+    }
+    body: dict[str, Any] = {
+        "model": model.name,
+        "messages": _convert_messages_for_openai(messages),
+        "stream": False,
+        "max_tokens": max_tokens,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        response = await client.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        data = response.json()
+    return data["choices"][0]["message"]["content"]
+
+
+async def _anthropic_chat(
+    channel: LLMChannel,
+    model: LLMModel,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+) -> str:
+    url = f"{channel.base_url.rstrip('/')}/v1/messages" if channel.base_url else "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": channel.api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    system_prompt, anthropic_messages = _convert_messages_for_anthropic(messages)
+    body: dict[str, Any] = {
+        "model": model.name,
+        "max_tokens": max_tokens,
+        "messages": anthropic_messages,
+        "stream": False,
+    }
+    if system_prompt:
+        body["system"] = system_prompt
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        response = await client.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        data = response.json()
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            return block["text"]
+    return ""

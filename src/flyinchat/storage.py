@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -141,7 +142,7 @@ def initialize_chat_db(path: Path) -> None:
             ON messages (conversation_id, created_at)
             """
         )
-        for column, default_val in [("total_output_tokens", 0), ("last_input_tokens", 0)]:
+        for column, default_val in [("total_output_tokens", 0), ("last_input_tokens", 0), ("compacted_message_count", 0)]:
             try:
                 connection.execute(
                     f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default_val}"
@@ -500,6 +501,56 @@ def list_messages(chat_db: Path, *, conversation_id: str) -> list[Message]:
     return [_message_from_row(row) for row in rows]
 
 
+def update_message_content(chat_db: Path, *, message_id: str, content: str) -> None:
+    with _connect(chat_db) as connection:
+        connection.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            (content, message_id),
+        )
+
+
+def update_conversation_compacted_count(
+    chat_db: Path, *, conversation_id: str, count: int
+) -> None:
+    with _connect(chat_db) as connection:
+        connection.execute(
+            """
+            UPDATE conversations
+            SET compacted_message_count = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (count, conversation_id),
+        )
+
+
+def list_active_messages(chat_db: Path, *, conversation_id: str) -> list[Message]:
+    """Load messages for API use, skipping pre-compact messages."""
+    all_msgs = list_messages(chat_db, conversation_id=conversation_id)
+    boundary_idx: int | None = None
+    for i, msg in enumerate(all_msgs):
+        try:
+            parsed = json.loads(msg.content)
+            if isinstance(parsed, dict) and parsed.get("type") == "compact_boundary":
+                boundary_idx = i
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if boundary_idx is None:
+        return all_msgs
+
+    start = boundary_idx
+    if start > 0:
+        try:
+            prev = json.loads(all_msgs[start - 1].content)
+            if isinstance(prev, dict) and prev.get("type") == "compact_summary":
+                start = boundary_idx - 1
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return all_msgs[start:]
+
+
 def _validate_channel_fields(*, name: str, provider_type: str, api_key: str) -> None:
     if provider_type not in _PROVIDER_TYPES:
         raise ValueError(f"Unsupported provider_type: {provider_type}")
@@ -580,6 +631,7 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         title=row["title"],
         total_output_tokens=row["total_output_tokens"],
         last_input_tokens=row["last_input_tokens"],
+        compacted_message_count=row["compacted_message_count"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

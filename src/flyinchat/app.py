@@ -10,6 +10,7 @@ from textual.containers import Container, Vertical
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
 from .api_client import stream_chat_completion
+from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
 from .models import LLMChannel, LLMModel
 from .paths import AppPaths
 from .storage import (
@@ -21,6 +22,7 @@ from .storage import (
     get_conversation,
     get_primary_llm_model,
     initialize_storage,
+    list_active_messages,
     list_conversations,
     list_llm_channels,
     list_llm_models,
@@ -72,6 +74,7 @@ _COMMANDS = (
     SelectionItem("/1M", "/1M", "Toggle 1M context window mode (125K ↔ 1M)"),
     SelectionItem("/sessions", "/sessions", "Open project session history"),
     SelectionItem("/clear", "/clear", "Start a new session"),
+    SelectionItem("/compact", "/compact", "Compact conversation history"),
 )
 
 _REASONING_LEVELS = (
@@ -109,6 +112,7 @@ class FlyinChatApp(App[None]):
         self._tool_registry: ToolRegistry | None = None
         self._tool_executor: ToolExecutor | None = None
         self._tool_context: ToolContext | None = None
+        self._compacting = False
 
     CSS = """
     Screen {
@@ -239,13 +243,18 @@ class FlyinChatApp(App[None]):
         self._tool_executor = ToolExecutor(self._tool_registry)
 
     @staticmethod
-    def _message_to_api_format(msg) -> dict:
+    def _message_to_api_format(msg) -> dict | None:
         try:
             parsed = json.loads(msg.content)
             if isinstance(parsed, list):
                 return {"role": msg.role, "content": parsed}
-            if isinstance(parsed, dict) and "tool_use_id" in parsed:
-                return {"role": "tool", "tool_use_id": parsed["tool_use_id"], "content": parsed["content"]}
+            if isinstance(parsed, dict):
+                if "tool_use_id" in parsed:
+                    return {"role": "tool", "tool_use_id": parsed["tool_use_id"], "content": parsed["content"]}
+                if parsed.get("type") == "compact_boundary":
+                    return None
+                if parsed.get("type") == "compact_summary":
+                    return {"role": "system", "content": parsed.get("summary", "")}
         except (json.JSONDecodeError, TypeError):
             pass
         return {"role": msg.role, "content": msg.content}
@@ -269,8 +278,16 @@ class FlyinChatApp(App[None]):
                             f"{json.dumps(block['input'], indent=2)}\n```\n"
                         )
                 return "".join(parts)
-            if isinstance(parsed, dict) and "tool_use_id" in parsed:
-                return f"```\n{parsed['content']}\n```"
+            if isinstance(parsed, dict):
+                if parsed.get("type") == "compact_boundary":
+                    before_k = parsed.get("tokens_before", 0) // 1000
+                    after_k = parsed.get("tokens_after", 0) // 1000
+                    strategy = parsed.get("strategy", "")
+                    return f"\n\n---\n\n📦 **Conversation Compacted** ({strategy})\n{before_k}K → {after_k}K tokens\n"
+                if parsed.get("type") == "compact_summary":
+                    return f"\n\n📋 **Summary of earlier conversation:**\n\n{parsed.get('summary', '')}\n"
+                if "tool_use_id" in parsed:
+                    return f"```\n{parsed['content']}\n```"
         except (json.JSONDecodeError, TypeError):
             pass
         return msg.content
@@ -403,6 +420,8 @@ class FlyinChatApp(App[None]):
                 self._show_sessions()
             case "/clear":
                 self._start_new_session()
+            case "/compact":
+                self._run_compact()
             case _:
                 self._show_panel("Unknown command", f"No command named {command}. Type / to see available commands.")
 
@@ -597,6 +616,68 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = True
         self._show_panel("New session", "Ready for a new project-local conversation.")
         self._render_status_bar()
+
+    @work
+    async def _run_compact(self) -> None:
+        if self.paths is None or self.active_conversation_id is None:
+            self._show_panel("Compact", "No active conversation to compact.")
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._show_panel("Compact", "No model configured. Add one with `/api`, then `/model`.")
+            return
+
+        channel, model = primary
+        all_messages = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        active_messages = list_active_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        already_compacted = len(active_messages) < len(all_messages)
+
+        policy = CompactionPolicy.from_model(model)
+        estimator = TokenEstimator()
+        estimated = estimator.estimate_messages(active_messages)
+
+        if already_compacted and estimated <= policy.soft_limit:
+            self._clear_selection()
+            self._show_panel(
+                "Compact",
+                f"Already compacted — {estimated // 1000}K tokens is within budget "
+                f"({policy.soft_limit // 1000}K limit).",
+            )
+            return
+
+        api_messages = [
+            formatted for msg in active_messages
+            if (formatted := self._message_to_api_format(msg)) is not None
+        ]
+
+        engine = CompactionEngine(
+            self.paths.chat_db,
+            self.active_conversation_id,
+        )
+        self._compacting = True
+        self._render_status_bar()
+        result = await engine.compact_if_needed_async(
+            active_messages, api_messages, policy, force=True, model=model, channel=channel
+        )
+        self._compacting = False
+
+        if result.applied:
+            before_k = result.tokens_before // 1000
+            after_k = result.tokens_after // 1000
+            self._clear_selection()
+            self._show_panel(
+                "Conversation compacted",
+                f"Strategy: {result.strategy}\nTokens: {before_k}K → {after_k}K",
+            )
+            self._render_history()
+            self._render_status_bar()
+        else:
+            self._show_panel(
+                "Compact",
+                "Compaction not needed — conversation is within token budget.",
+            )
+            self._render_status_bar()
 
     def _start_api_form(self, kind: str) -> None:
         self._clear_selection()
@@ -912,6 +993,10 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
+        if self._compacting:
+            self.query_one("#status-bar", Static).update("⏳ Compacting conversation history...")
+            return
+
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
             self.query_one("#status-bar", Static).update("No model configured — use /api then /model")
@@ -958,6 +1043,8 @@ class FlyinChatApp(App[None]):
         for msg in history:
             if msg.role == "tool":
                 lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+            elif msg.role == "system":
+                lines.append(f"**System**\n\n{self._message_to_display(msg)}")
             else:
                 role_label = "**You**" if msg.role == "user" else "**Assistant**"
                 lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
@@ -989,14 +1076,34 @@ class FlyinChatApp(App[None]):
             return
 
         channel, model = primary
-        history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-        api_messages: list[dict] = [self._message_to_api_format(msg) for msg in history]
+        active_messages = list_active_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        api_messages: list[dict] = [
+            formatted for msg in active_messages
+            if (formatted := self._message_to_api_format(msg)) is not None
+        ]
 
         tool_list = list(self._tool_registry.tools) if self._tool_registry else None
         message_view = self.query_one("#message-view", Markdown)
         self.query_one("#empty-state", Vertical).display = False
 
+        policy = CompactionPolicy.from_model(model)
+        engine = CompactionEngine(self.paths.chat_db, self.active_conversation_id)
+        self._compacting = True
+        self._render_status_bar()
+        result = await engine.compact_if_needed_async(
+            active_messages, api_messages, policy, force=False, model=model, channel=channel
+        )
+        self._compacting = False
+        self._render_status_bar()
+        if result.applied:
+            active_messages = list(result.messages)
+            api_messages = [
+                formatted for msg in active_messages
+                if (formatted := self._message_to_api_format(msg)) is not None
+            ]
+
         max_tool_rounds = 10
+        compact_retry_remaining = 1
         for _ in range(max_tool_rounds):
             text_content = ""
             display_text = ""
@@ -1007,8 +1114,13 @@ class FlyinChatApp(App[None]):
             current_history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
             history_lines: list[str] = []
             for msg in current_history:
-                role_label = "**You**" if msg.role == "user" else ("**Tool**" if msg.role == "tool" else "**Assistant**")
-                history_lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
+                if msg.role == "tool":
+                    history_lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+                elif msg.role == "system":
+                    history_lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+                else:
+                    role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                    history_lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
             history_display = "\n\n---\n\n".join(history_lines)
             prefix = (history_display + "\n\n---\n\n") if history_display else ""
 
@@ -1038,6 +1150,26 @@ class FlyinChatApp(App[None]):
                     message_view.update(f"{prefix}**Assistant**\n\n{display_text}")
                     self.query_one("#chat-area", Container).scroll_end(animate=False)
             except Exception as error:
+                error_str = str(error)
+                if compact_retry_remaining > 0 and (
+                    "context_length_exceeded" in error_str
+                    or "413" in error_str
+                    or "too long" in error_str.lower()
+                    or "maximum context length" in error_str.lower()
+                ):
+                    compact_retry_remaining -= 1
+                    message_view.update(f"{prefix}**Assistant**\n\n⏳ *Compacting conversation...*\n")
+                    all_messages = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+                    reactive_result = await engine.reactive_compact(
+                        all_messages, api_messages, policy, model, channel, reason=error_str,
+                    )
+                    if reactive_result.applied:
+                        active_messages = list(reactive_result.messages)
+                        api_messages[:] = [
+                            formatted for msg in active_messages
+                            if (formatted := self._message_to_api_format(msg)) is not None
+                        ]
+                        continue
                 message_view.update(f"{prefix}**Assistant**\n\n*[Error: {error}]*")
                 return
             finally:

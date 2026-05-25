@@ -31,6 +31,7 @@ class Conversation:
     title: str
     total_output_tokens: int = 0
     last_input_tokens: int = 0
+    compacted_message_count: int = 0
     created_at: str = ""
     updated_at: str = ""
 
