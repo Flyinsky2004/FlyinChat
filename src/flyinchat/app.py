@@ -1006,7 +1006,28 @@ class FlyinChatApp(App[None]):
         updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=enabled)
         self._clear_selection()
         status = "enabled" if updated.thinking_enabled else "disabled"
-        self._show_panel("Thinking mode", f"Thinking is now {status} for {primary[0].name} / {updated.name}")
+        hint = f"> Thinking is now **{status}** for {primary[0].name} / {updated.name}"
+
+        if self.active_conversation_id is not None:
+            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            if history:
+                lines: list[str] = []
+                for msg in history:
+                    if msg.role == "tool":
+                        lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+                    elif msg.role == "system":
+                        lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+                    else:
+                        role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                        lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
+                lines.append(hint)
+                self.query_one("#empty-state", Vertical).display = False
+                self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
+                self.query_one("#chat-area", Container).scroll_end(animate=False)
+            else:
+                self._show_panel("Thinking mode", hint.lstrip("> "))
+        else:
+            self._show_panel("Thinking mode", hint.lstrip("> "))
         self._render_status_bar()
 
     def _show_reasoning_settings(self) -> None:
