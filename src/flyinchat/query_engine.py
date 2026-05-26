@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from .api_client import stream_chat_completion
 from .compact import CompactionEngine, CompactionPolicy
-from .message_utils import message_to_api_format
+from .message_utils import message_to_api_format, sanitize_api_messages
 from .models import LLMChannel, LLMModel, TurnResult
 from .paths import AppPaths
 from .storage import (
@@ -161,6 +161,7 @@ class QueryEngine:
             for msg in active_messages
             if (formatted := message_to_api_format(msg)) is not None
         ]
+        api_messages = sanitize_api_messages(api_messages)
 
         tool_list = (
             list(self._tool_registry.tools) if self._tool_registry else None
@@ -180,11 +181,11 @@ class QueryEngine:
             )
             if compact_result.applied:
                 active_messages = list(compact_result.messages)
-                api_messages = [
+                api_messages = sanitize_api_messages([
                     formatted
                     for msg in active_messages
                     if (formatted := message_to_api_format(msg)) is not None
-                ]
+                ])
                 logger.info(
                     "preflight compact applied",
                     extra={
@@ -210,6 +211,15 @@ class QueryEngine:
 
         for round_num in range(max_rounds):
             if self._cancel_event.is_set():
+                if round_num == 0:
+                    add_message_with_turn(
+                        self.config.paths.chat_db,
+                        conversation_id=self.config.conversation_id,
+                        turn_id=turn_id,
+                        role="assistant",
+                        subtype="interrupted",
+                        content="[Interrupted]",
+                    )
                 await self._emit(
                     on_event,
                     TurnEvent(turn_id, "turn_end", {"cancelled": True}),
@@ -322,11 +332,11 @@ class QueryEngine:
                     )
                     if reactive_result.applied:
                         active_messages = list(reactive_result.messages)
-                        api_messages[:] = [
+                        api_messages[:] = sanitize_api_messages([
                             formatted
                             for msg in active_messages
                             if (formatted := message_to_api_format(msg)) is not None
-                        ]
+                        ])
                         await self._emit(
                             on_event,
                             TurnEvent(
@@ -391,6 +401,15 @@ class QueryEngine:
                         role="assistant",
                         subtype="normal",
                         content=content,
+                    )
+                elif round_num == 0:
+                    add_message_with_turn(
+                        self.config.paths.chat_db,
+                        conversation_id=self.config.conversation_id,
+                        turn_id=turn_id,
+                        role="assistant",
+                        subtype="interrupted",
+                        content="[Interrupted]",
                     )
                 await self._emit(
                     on_event,

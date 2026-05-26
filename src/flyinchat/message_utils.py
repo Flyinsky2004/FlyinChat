@@ -5,6 +5,22 @@ from .models import Message
 _MAX_RESULT_CHARS = 8000
 
 
+def sanitize_api_messages(messages: list[dict]) -> list[dict]:
+    """Insert placeholder assistant messages between consecutive user messages.
+
+    This recovers from crashes or cancellations that leave orphaned user
+    messages in the database, ensuring valid role alternation for the API.
+    """
+    if not messages:
+        return messages
+    cleaned: list[dict] = []
+    for msg in messages:
+        if cleaned and msg.get("role") == "user" and cleaned[-1].get("role") == "user":
+            cleaned.append({"role": "assistant", "content": "[Interrupted]"})
+        cleaned.append(msg)
+    return cleaned
+
+
 def message_to_api_format(msg: Message) -> dict | None:
     if msg.subtype == "permission_event":
         return None
