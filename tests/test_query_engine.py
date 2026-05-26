@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -211,6 +212,45 @@ class TestQueryEngineBasic:
             assert ("assistant", "tool_call") in roles
             assert ("tool", "tool_result") in roles
             assert ("assistant", "normal") in roles
+
+        asyncio.run(run())
+
+    def test_normal_assistant_message_preserves_reasoning_content(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_db, title="test")
+            engine = _make_query_engine(paths, conv.id)
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                yield {"type": "reasoning", "content": "thinking before answer"}
+                yield {"type": "text", "content": "final answer"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "hello")
+
+            assert result.status == "completed"
+            messages = list_messages(paths.chat_db, conversation_id=conv.id)
+            assistant = next(msg for msg in messages if msg.role == "assistant")
+            content = json.loads(assistant.content)
+            assert content == [
+                {"type": "thinking", "thinking": "thinking before answer", "signature": ""},
+                {"type": "text", "text": "final answer"},
+            ]
 
         asyncio.run(run())
 

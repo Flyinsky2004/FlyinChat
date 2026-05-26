@@ -59,10 +59,13 @@ def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[st
             })
         elif msg["role"] == "assistant" and isinstance(msg.get("content"), list):
             text_parts: list[str] = []
+            reasoning_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
             for block in msg["content"]:
                 if block["type"] == "thinking":
-                    continue
+                    reasoning = block.get("thinking", "")
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
                 elif block["type"] == "text":
                     text_parts.append(block["text"])
                 elif block["type"] == "tool_use":
@@ -76,6 +79,8 @@ def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[st
                     })
             text_content = "\n".join(text_parts) if text_parts else ""
             converted_msg: dict[str, Any] = {"role": "assistant"}
+            if reasoning_parts:
+                converted_msg["reasoning_content"] = "\n".join(reasoning_parts)
             if tool_calls:
                 converted_msg["tool_calls"] = tool_calls
                 converted_msg["content"] = text_content or None

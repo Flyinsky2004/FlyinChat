@@ -349,13 +349,25 @@ class QueryEngine:
 
             if not tool_uses:
                 if text_content:
+                    if thinking_blocks:
+                        assistant_content: list[dict] = []
+                        for th in thinking_blocks:
+                            assistant_content.append({
+                                "type": "thinking",
+                                "thinking": th["thinking"],
+                                "signature": th.get("signature", ""),
+                            })
+                        assistant_content.append({"type": "text", "text": text_content})
+                        content = json.dumps(assistant_content)
+                    else:
+                        content = text_content
                     add_message_with_turn(
                         self.config.paths.chat_db,
                         conversation_id=self.config.conversation_id,
                         turn_id=turn_id,
                         role="assistant",
                         subtype="normal",
-                        content=text_content,
+                        content=content,
                     )
                 await self._emit(
                     on_event,
