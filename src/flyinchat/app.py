@@ -122,6 +122,9 @@ class FlyinChatApp(App[None]):
         self._query_engine: QueryEngine | None = None
         self._compacting = False
         self._pending_permission_request_id: str | None = None
+        self._prompt_history: tuple[str, ...] = ()
+        self._prompt_history_index: int | None = None
+        self._prompt_history_draft = ""
 
     CSS = """
     Screen {
@@ -359,6 +362,14 @@ class FlyinChatApp(App[None]):
                 return
 
         if not self.selection_items:
+            if event.key == "up":
+                event.prevent_default()
+                self._navigate_prompt_history(-1)
+                return
+            if event.key == "down":
+                event.prevent_default()
+                self._navigate_prompt_history(1)
+                return
             return
 
         if event.key == "up":
@@ -453,9 +464,53 @@ class FlyinChatApp(App[None]):
                 role="user",
                 content=prompt,
             )
+            self._record_prompt_history(prompt)
             self._render_history()
         event.input.value = ""
         self._submit_via_engine(prompt)
+
+    def _record_prompt_history(self, prompt: str) -> None:
+        self._prompt_history = (*self._prompt_history, prompt)
+        self._prompt_history_index = None
+        self._prompt_history_draft = ""
+
+    def _load_prompt_history(self) -> None:
+        if self.paths is None or self.active_conversation_id is None:
+            self._prompt_history = ()
+        else:
+            messages = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            self._prompt_history = tuple(
+                message.content
+                for message in messages
+                if message.role == "user" and message.subtype == "normal"
+            )
+        self._prompt_history_index = None
+        self._prompt_history_draft = ""
+
+    def _navigate_prompt_history(self, direction: int) -> None:
+        if not self._prompt_history:
+            return
+
+        prompt_input = self.query_one("#prompt-input", Input)
+        if self._prompt_history_index is None:
+            if direction > 0:
+                return
+            self._prompt_history_draft = prompt_input.value
+            next_index = len(self._prompt_history) - 1
+        else:
+            next_index = self._prompt_history_index + direction
+
+        if next_index < 0:
+            next_index = 0
+        if next_index >= len(self._prompt_history):
+            self._prompt_history_index = None
+            prompt_input.value = self._prompt_history_draft
+            prompt_input.action_end()
+            return
+
+        self._prompt_history_index = next_index
+        prompt_input.value = self._prompt_history[next_index]
+        prompt_input.action_end()
 
     def _run_command(self, command: str) -> None:
         if command == "/api":
@@ -530,6 +585,8 @@ class FlyinChatApp(App[None]):
                     self._total_output_tokens = 0
                     self._last_input_tokens = 0
                 self._last_usage = {}
+                self._query_engine = None
+                self._load_prompt_history()
                 self._clear_selection()
                 self._render_history()
                 self._render_status_bar()
@@ -721,6 +778,8 @@ class FlyinChatApp(App[None]):
         self._last_usage = {}
         self._total_output_tokens = 0
         self._last_input_tokens = 0
+        self._query_engine = None
+        self._load_prompt_history()
         self._clear_selection()
         self.query_one("#empty-state", Vertical).display = True
         self._show_panel("New session", "Ready for a new project-local conversation.")

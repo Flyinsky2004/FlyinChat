@@ -6,6 +6,7 @@ from textual.widgets import Input, Markdown, Static
 from flyinchat import FlyinChatApp
 from flyinchat.paths import resolve_app_paths
 from flyinchat.storage import (
+    add_message,
     create_conversation,
     get_primary_llm_model,
     list_conversations,
@@ -310,6 +311,30 @@ def test_sessions_command_shows_history(tmp_path: Path) -> None:
     asyncio.run(run_app())
 
 
+def test_selected_session_loads_prompt_history(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            conversation = create_conversation(paths.chat_db, title="Existing chat")
+            add_message(paths.chat_db, conversation_id=conversation.id, role="user", content="First old question")
+            add_message(paths.chat_db, conversation_id=conversation.id, role="assistant", content="Old answer")
+            add_message(paths.chat_db, conversation_id=conversation.id, role="user", content="Second old question")
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/sessions"
+            await pilot.press("enter")
+            await pilot.press("enter")
+
+            await pilot.press("up")
+            assert prompt_input.value == "Second old question"
+
+            await pilot.press("up")
+            assert prompt_input.value == "First old question"
+
+    asyncio.run(run_app())
+
+
 def test_clear_command_starts_new_session(tmp_path: Path) -> None:
     async def run_app() -> None:
         paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
@@ -349,5 +374,56 @@ def test_double_escape_clears_input(tmp_path: Path) -> None:
             await pilot.press("escape")
             assert prompt_input.value == ""
             assert app.selection_items == ()
+
+    asyncio.run(run_app())
+
+
+def test_prompt_history_uses_arrow_keys(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+        app._submit_via_engine = lambda prompt: None
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "First prompt"
+            await pilot.press("enter")
+            prompt_input.value = "Second prompt"
+            await pilot.press("enter")
+
+            await pilot.press("up")
+            assert prompt_input.value == "Second prompt"
+
+            await pilot.press("up")
+            assert prompt_input.value == "First prompt"
+
+            await pilot.press("down")
+            assert prompt_input.value == "Second prompt"
+
+            await pilot.press("down")
+            assert prompt_input.value == ""
+
+    asyncio.run(run_app())
+
+
+def test_prompt_history_restores_draft_and_skips_commands(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+        app._submit_via_engine = lambda prompt: None
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "Remember this"
+            await pilot.press("enter")
+            prompt_input.value = "/not-a-command"
+            await pilot.press("enter")
+            prompt_input.value = "draft text"
+
+            await pilot.press("up")
+            assert prompt_input.value == "Remember this"
+
+            await pilot.press("down")
+            assert prompt_input.value == "draft text"
 
     asyncio.run(run_app())
