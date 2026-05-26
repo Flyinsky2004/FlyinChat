@@ -430,6 +430,99 @@ def test_prompt_history_restores_draft_and_skips_commands(tmp_path: Path) -> Non
     asyncio.run(run_app())
 
 
+def test_file_mention_menu_inserts_relative_path(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        project = tmp_path / "project"
+        source = project / "src" / "flyinchat"
+        source.mkdir(parents=True)
+        (source / "app.py").write_text("SECRET-CONTENT", encoding="utf-8")
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=project)
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            command_menu = app.query_one("#command-menu", Static)
+            message_view = app.query_one("#message-view", Markdown)
+            original_message_view = message_view._markdown
+            prompt_input.value = "Explain @"
+            prompt_input.action_end()
+            await pilot.press("a")
+            await pilot.press("p")
+            await pilot.press("p")
+            await pilot.pause()
+
+            assert command_menu.display is True
+            assert "src/flyinchat/app.py" in command_menu.content
+            assert message_view._markdown == original_message_view
+
+            await pilot.press("enter")
+
+            assert prompt_input.value == "Explain src/flyinchat/app.py "
+            assert "SECRET-CONTENT" not in prompt_input.value
+
+    asyncio.run(run_app())
+
+
+def test_file_mention_selection_uses_arrow_keys(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        project = tmp_path / "project"
+        source = project / "src" / "flyinchat"
+        source.mkdir(parents=True)
+        (source / "api_client.py").write_text("api", encoding="utf-8")
+        (source / "app.py").write_text("app", encoding="utf-8")
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=project)
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "Open @a"
+            prompt_input.action_end()
+            await pilot.pause()
+
+            message_view = app.query_one("#message-view", Markdown)
+            original_message_view = message_view._markdown
+
+            assert app.selection_context == "file_mention"
+            assert app.selected_index == 0
+
+            await pilot.press("down")
+            assert app.selected_index == 1
+            assert message_view._markdown == original_message_view
+
+            await pilot.press("up")
+            assert app.selected_index == 0
+            assert message_view._markdown == original_message_view
+
+    asyncio.run(run_app())
+
+
+def test_file_mention_submit_persists_path_without_content(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        project = tmp_path / "project"
+        source = project / "src" / "flyinchat"
+        source.mkdir(parents=True)
+        (source / "app.py").write_text("SECRET-CONTENT", encoding="utf-8")
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=project)
+        app = FlyinChatApp(paths=paths)
+        app._submit_via_engine = lambda prompt: app._stop_spinner()
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "Read @app"
+            prompt_input.action_end()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.press("enter")
+
+            conversations = list_conversations(paths.chat_path)
+            messages = list_messages(paths.chat_path, conversation_id=conversations[0].id)
+
+            assert messages[0].content == "Read src/flyinchat/app.py"
+            assert "SECRET-CONTENT" not in messages[0].content
+
+    asyncio.run(run_app())
+
+
 def test_streaming_text_renders_before_turn_end(tmp_path: Path) -> None:
     async def run_app() -> None:
         paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")

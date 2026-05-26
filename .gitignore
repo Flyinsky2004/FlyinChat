@@ -12,3 +12,4 @@ build/
 .env
 .flyinchat/
 .DS_Store
+TestWorkspace

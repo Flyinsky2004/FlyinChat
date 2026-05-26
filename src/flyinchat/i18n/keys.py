@@ -61,6 +61,11 @@ class TKey(StrEnum):
     CMENU_NO_MATCHES = "cmenu.no_matches"
     CMENU_COMMANDS = "cmenu.commands"
     CMENU_FOOTER = "cmenu.footer"
+    FILE_MENTION_TITLE = "file_mention.title"
+    FILE_MENTION_FOOTER = "file_mention.footer"
+    FILE_MENTION_NO_MATCHES = "file_mention.no_matches"
+    FILE_MENTION_FILE = "file_mention.file"
+    FILE_MENTION_DIR = "file_mention.dir"
 
     # ── Panels ──
     PANEL_UNKNOWN_CMD = "panel.unknown_cmd"

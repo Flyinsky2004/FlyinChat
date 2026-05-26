@@ -60,6 +60,11 @@ ZH: dict[TKey, str] = {
     TKey.CMENU_NO_MATCHES: "没有匹配的命令\n输入 /api、/model、/sessions 或 /clear",
     TKey.CMENU_COMMANDS: "命令",
     TKey.CMENU_FOOTER: "↑/↓ 选择，Tab 自动补全，Enter 打开。",
+    TKey.FILE_MENTION_TITLE: "工作区路径",
+    TKey.FILE_MENTION_FOOTER: "↑/↓ 选择，Enter 或 Tab 插入路径。",
+    TKey.FILE_MENTION_NO_MATCHES: "没有匹配 @{query} 的文件或文件夹",
+    TKey.FILE_MENTION_FILE: "文件",
+    TKey.FILE_MENTION_DIR: "文件夹",
 
     # ── Panels ──
     TKey.PANEL_UNKNOWN_CMD: "未知命令",

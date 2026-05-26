@@ -60,6 +60,11 @@ EN: dict[TKey, str] = {
     TKey.CMENU_NO_MATCHES: "No matching commands\nType /api, /model, /sessions, or /clear",
     TKey.CMENU_COMMANDS: "Commands",
     TKey.CMENU_FOOTER: "Use ↑/↓ to select, Tab to autocomplete, Enter to open.",
+    TKey.FILE_MENTION_TITLE: "Workspace paths",
+    TKey.FILE_MENTION_FOOTER: "Use ↑/↓ to select, Enter or Tab to insert the path.",
+    TKey.FILE_MENTION_NO_MATCHES: "No matching files or folders for @{query}",
+    TKey.FILE_MENTION_FILE: "file",
+    TKey.FILE_MENTION_DIR: "directory",
 
     # ── Panels ──
     TKey.PANEL_UNKNOWN_CMD: "Unknown command",

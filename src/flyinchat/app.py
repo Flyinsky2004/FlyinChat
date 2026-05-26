@@ -9,9 +9,11 @@ os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
 from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
+from .file_mentions import MentionSpan, find_active_mention, workspace_path_suggestions
 from .i18n import I18nStore, Language, TKey
 from .logging_config import configure_logging
 from .message_utils import message_to_api_format, message_to_display
@@ -111,6 +113,7 @@ class FlyinChatApp(App[None]):
         self._prompt_history: tuple[str, ...] = ()
         self._prompt_history_index: int | None = None
         self._prompt_history_draft = ""
+        self._active_mention_span: MentionSpan | None = None
         self._mode: int = 0  # 0=normal, 1=auto_edit, 2=yolo, 3=plan
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
@@ -490,6 +493,9 @@ class FlyinChatApp(App[None]):
         if event.key == "tab":
             if self.selection_items:
                 event.prevent_default()
+                if self.selection_context == "file_mention":
+                    self._insert_selected_file_mention()
+                    return
                 prompt_input = self.query_one("#prompt-input", Input)
                 self._suppress_menu_update = True
                 prompt_input.value = self.selection_items[self.selected_index].key
@@ -511,11 +517,16 @@ class FlyinChatApp(App[None]):
 
         value = event.value.strip()
         if value.startswith("/"):
+            self._active_mention_span = None
             self._show_command_menu(value)
             return
 
+        cursor_position = getattr(event.input, "cursor_position", len(event.value))
+        if self._show_file_mention_menu(event.value, cursor_position):
+            return
+
         self.query_one("#command-menu", Static).display = False
-        if self.selection_context == "main":
+        if self.selection_context in ("main", "file_mention"):
             self._clear_selection()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -525,6 +536,10 @@ class FlyinChatApp(App[None]):
 
         if self.form_state is not None:
             self._submit_form_value(prompt, event.input)
+            return
+
+        if self.selection_context == "file_mention" and self.selection_items:
+            self._activate_selection()
             return
 
         if prompt.startswith("/api add ") or prompt.startswith("/model use "):
@@ -691,6 +706,46 @@ class FlyinChatApp(App[None]):
             target_menu=True,
         )
 
+    def _show_file_mention_menu(self, value: str, cursor_position: int) -> bool:
+        if self.paths is None:
+            return False
+
+        span = find_active_mention(value, cursor_position)
+        if span is None:
+            self._active_mention_span = None
+            return False
+
+        self._active_mention_span = span
+        suggestions = workspace_path_suggestions(self.paths.project_dir.parent, span.query)
+        command_menu = self.query_one("#command-menu", Static)
+        if not suggestions:
+            self.selection_context = "file_mention"
+            self.selection_title = self.i18n.t(TKey.FILE_MENTION_TITLE)
+            self.selection_header = ""
+            self.selection_footer = ""
+            self.selection_items = ()
+            self.selected_index = 0
+            command_menu.update(self.i18n.t(TKey.FILE_MENTION_NO_MATCHES, query=span.query))
+            command_menu.display = True
+            return True
+
+        items = tuple(
+            SelectionItem(
+                suggestion.path,
+                f"{suggestion.path}/" if suggestion.is_dir else suggestion.path,
+                self.i18n.t(TKey.FILE_MENTION_DIR if suggestion.is_dir else TKey.FILE_MENTION_FILE),
+            )
+            for suggestion in suggestions
+        )
+        self._set_selection(
+            context="file_mention",
+            title=self.i18n.t(TKey.FILE_MENTION_TITLE),
+            items=items,
+            footer=self.i18n.t(TKey.FILE_MENTION_FOOTER),
+            target_menu=True,
+        )
+        return True
+
     def _activate_selection(self) -> None:
         if not self.selection_items:
             return
@@ -709,6 +764,8 @@ class FlyinChatApp(App[None]):
                 self._set_reasoning_effort(item.key)
             case "effort_select":
                 self._set_effort(item.key)
+            case "file_mention":
+                self._insert_selected_file_mention()
             case "session_select":
                 self.active_conversation_id = item.key
                 conv = get_conversation(self.paths.chat_path, conversation_id=item.key)
@@ -726,6 +783,29 @@ class FlyinChatApp(App[None]):
                 self._render_status_bar()
             case "permission_request":
                 self._resolve_pending_permission(item.key)
+
+    def _insert_selected_file_mention(self) -> None:
+        if not self.selection_items:
+            return
+
+        prompt_input = self.query_one("#prompt-input", Input)
+        cursor_position = getattr(prompt_input, "cursor_position", len(prompt_input.value))
+        span = find_active_mention(prompt_input.value, cursor_position) or self._active_mention_span
+        if span is None:
+            self._clear_selection()
+            return
+
+        selected_path = self.selection_items[self.selected_index].key
+        suffix = prompt_input.value[span.end :]
+        separator = "" if suffix[:1].isspace() else " "
+        replacement = f"{selected_path}{separator}"
+        new_value = f"{prompt_input.value[:span.start]}{replacement}{suffix}"
+        new_cursor = span.start + len(replacement)
+        self._suppress_menu_update = True
+        prompt_input.value = new_value
+        prompt_input.cursor_position = new_cursor
+        self._active_mention_span = None
+        self._clear_selection()
 
     def _show_permission_request(self, data: dict) -> None:
         tool_name = data.get("tool_name", "unknown")
@@ -1337,7 +1417,7 @@ class FlyinChatApp(App[None]):
             rows.append(self.selection_footer)
 
         content = "\n".join(rows)
-        if target_menu or self.selection_context in ("main", "permission_request"):
+        if target_menu or self.selection_context in ("main", "file_mention", "permission_request"):
             command_menu = self.query_one("#command-menu", Static)
             command_menu.update(content)
             command_menu.display = True
@@ -1352,6 +1432,7 @@ class FlyinChatApp(App[None]):
         self.selection_footer = ""
         self.selection_items = ()
         self.selected_index = 0
+        self._active_mention_span = None
         self.query_one("#command-menu", Static).display = False
 
     def _clear_input(self) -> None:
@@ -1372,8 +1453,14 @@ class FlyinChatApp(App[None]):
         self._scroll_chat_to_bottom()
 
     def _scroll_chat_to_bottom(self) -> None:
-        self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
-        self.set_timer(0.08, lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
+        def scroll_end() -> None:
+            try:
+                self.query_one("#chat-area", Container).scroll_end(animate=False)
+            except NoMatches:
+                return
+
+        self.call_after_refresh(scroll_end)
+        self.set_timer(0.08, scroll_end)
 
     def _render_history_with_hint(self, hint: str, *, fallback_title: str = "", fallback_body: str = "") -> bool:
         """Re-render conversation history with a transient hint appended. Falls back to _show_panel if no history."""
