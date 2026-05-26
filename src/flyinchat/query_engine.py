@@ -54,6 +54,14 @@ class QueryEngine:
         self._tool_context: ToolContext | None = None
         self._permission_store = PermissionRequestStore()
         self._pending_permissions: dict[str, asyncio.Future[str]] = {}
+        self._cancel_event = asyncio.Event()
+
+    def request_cancel(self) -> None:
+        self._cancel_event.set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
 
     def configure_tools(
         self,
@@ -201,6 +209,19 @@ class QueryEngine:
         total_output_tokens = 0
 
         for round_num in range(max_rounds):
+            if self._cancel_event.is_set():
+                await self._emit(
+                    on_event,
+                    TurnEvent(turn_id, "turn_end", {"cancelled": True}),
+                )
+                return TurnResult(
+                    turn_id=turn_id,
+                    status="cancelled",
+                    tool_rounds=round_num,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+
             text_content = ""
             thinking_blocks: list[dict] = []
             tool_uses: list[dict] = []
@@ -210,6 +231,8 @@ class QueryEngine:
                 async for event in stream_chat_completion(
                     channel, model, api_messages, usage_info, tool_list
                 ):
+                    if self._cancel_event.is_set():
+                        break
                     if event["type"] == "thinking":
                         thinking_blocks.append(event)
                         preview = (
@@ -347,6 +370,40 @@ class QueryEngine:
                     last_input_tokens=total_input_tokens,
                 )
 
+            if self._cancel_event.is_set():
+                if text_content:
+                    if thinking_blocks:
+                        assistant_content = []
+                        for th in thinking_blocks:
+                            assistant_content.append({
+                                "type": "thinking",
+                                "thinking": th["thinking"],
+                                "signature": th.get("signature", ""),
+                            })
+                        assistant_content.append({"type": "text", "text": text_content})
+                        content = json.dumps(assistant_content)
+                    else:
+                        content = text_content
+                    add_message_with_turn(
+                        self.config.paths.chat_db,
+                        conversation_id=self.config.conversation_id,
+                        turn_id=turn_id,
+                        role="assistant",
+                        subtype="normal",
+                        content=content,
+                    )
+                await self._emit(
+                    on_event,
+                    TurnEvent(turn_id, "turn_end", {"cancelled": True}),
+                )
+                return TurnResult(
+                    turn_id=turn_id,
+                    status="cancelled",
+                    tool_rounds=round_num,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+
             if not tool_uses:
                 if text_content:
                     if thinking_blocks:
@@ -439,6 +496,19 @@ class QueryEngine:
                             "content": tool_result.get("content", ""),
                         },
                     ),
+                )
+
+            if self._cancel_event.is_set():
+                await self._emit(
+                    on_event,
+                    TurnEvent(turn_id, "turn_end", {"cancelled": True}),
+                )
+                return TurnResult(
+                    turn_id=turn_id,
+                    status="cancelled",
+                    tool_rounds=round_num + 1,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
                 )
 
             if round_num + 1 >= max_rounds:

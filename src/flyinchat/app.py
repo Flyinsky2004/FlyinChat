@@ -103,6 +103,7 @@ class FlyinChatApp(App[None]):
         self._spinner_frame = 0
         self._spinner_timer: object = None
         self._pending_permission_request_id: str | None = None
+        self._pending_prompt: str | None = None
         self._streaming_assistant_text = ""
         self._last_stream_render_at = 0.0
         self._stream_render_interval = 0.05
@@ -323,6 +324,10 @@ class FlyinChatApp(App[None]):
             self._spinner_timer.stop()
             self._spinner_timer = None
 
+    def _request_cancel(self) -> None:
+        if self._query_engine is not None:
+            self._query_engine.request_cancel()
+
     def _tick_spinner(self) -> None:
         self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
         self._render_status_bar()
@@ -357,8 +362,16 @@ class FlyinChatApp(App[None]):
                 self._stop_spinner()
                 self._render_history()
                 self._render_status_bar()
+                if event.data.get("cancelled") and self._pending_prompt is not None:
+                    pending = self._pending_prompt
+                    self._pending_prompt = None
+                    self._submit_pending(pending)
             case "error":
                 self._stop_spinner()
+                if self._pending_prompt is not None:
+                    pending = self._pending_prompt
+                    self._pending_prompt = None
+                    self._submit_pending(pending)
             case "permission_required":
                 self._show_permission_request(event.data)
 
@@ -392,6 +405,20 @@ class FlyinChatApp(App[None]):
         self._render_history()
         self._render_status_bar()
 
+    def _submit_pending(self, prompt: str) -> None:
+        if self.paths is None or self.active_conversation_id is None:
+            return
+        add_message(
+            self.paths.chat_db,
+            conversation_id=self.active_conversation_id,
+            role="user",
+            content=prompt,
+        )
+        self._record_prompt_history(prompt)
+        self._render_history()
+        self._start_spinner()
+        self._submit_via_engine(prompt)
+
     @staticmethod
     def _message_to_api_format(msg) -> dict | None:
         return message_to_api_format(msg)
@@ -402,6 +429,9 @@ class FlyinChatApp(App[None]):
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":
+            if self._is_streaming:
+                self._request_cancel()
+                return
             now = time.monotonic()
             if now - self._last_escape_time < 0.5:
                 self._last_escape_time = 0.0
@@ -501,6 +531,12 @@ class FlyinChatApp(App[None]):
             self._activate_selection()
             event.input.value = ""
             self.query_one("#command-menu", Static).display = False
+            return
+
+        if self._is_streaming:
+            self._pending_prompt = prompt
+            self._request_cancel()
+            event.input.value = ""
             return
 
         if not prompt:

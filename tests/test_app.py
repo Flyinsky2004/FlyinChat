@@ -383,7 +383,7 @@ def test_prompt_history_uses_arrow_keys(tmp_path: Path) -> None:
     async def run_app() -> None:
         paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
         app = FlyinChatApp(paths=paths)
-        app._submit_via_engine = lambda prompt: None
+        app._submit_via_engine = lambda prompt: app._stop_spinner()
 
         async with app.run_test() as pilot:
             prompt_input = app.query_one("#prompt-input", Input)
@@ -411,7 +411,7 @@ def test_prompt_history_restores_draft_and_skips_commands(tmp_path: Path) -> Non
     async def run_app() -> None:
         paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
         app = FlyinChatApp(paths=paths)
-        app._submit_via_engine = lambda prompt: None
+        app._submit_via_engine = lambda prompt: app._stop_spinner()
 
         async with app.run_test() as pilot:
             prompt_input = app.query_one("#prompt-input", Input)
