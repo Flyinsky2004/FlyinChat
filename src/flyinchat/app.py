@@ -962,9 +962,11 @@ class FlyinChatApp(App[None]):
 
     def _show_primary_model_selected(self, channel: LLMChannel, model: LLMModel) -> None:
         self._last_usage = {}
-        self._show_panel(
-            "Primary model selected",
-            f"{channel.name}\n{model.name}",
+        hint = f"> Primary model set to **{channel.name} / {model.name}**"
+        self._render_history_with_hint(
+            hint,
+            fallback_title="Primary model selected",
+            fallback_body=f"{channel.name}\n{model.name}",
         )
         self._render_status_bar()
 
@@ -1007,27 +1009,7 @@ class FlyinChatApp(App[None]):
         self._clear_selection()
         status = "enabled" if updated.thinking_enabled else "disabled"
         hint = f"> Thinking is now **{status}** for {primary[0].name} / {updated.name}"
-
-        if self.active_conversation_id is not None:
-            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-            if history:
-                lines: list[str] = []
-                for msg in history:
-                    if msg.role == "tool":
-                        lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
-                    elif msg.role == "system":
-                        lines.append(f"**System**\n\n{self._message_to_display(msg)}")
-                    else:
-                        role_label = "**You**" if msg.role == "user" else "**Assistant**"
-                        lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
-                lines.append(hint)
-                self.query_one("#empty-state", Vertical).display = False
-                self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-                self.query_one("#chat-area", Container).scroll_end(animate=False)
-            else:
-                self._show_panel("Thinking mode", hint.lstrip("> "))
-        else:
-            self._show_panel("Thinking mode", hint.lstrip("> "))
+        self._render_history_with_hint(hint, fallback_title="Thinking mode", fallback_body=hint.lstrip("> "))
         self._render_status_bar()
 
     def _show_reasoning_settings(self) -> None:
@@ -1061,9 +1043,11 @@ class FlyinChatApp(App[None]):
         model = primary[1]
         updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
         self._clear_selection()
-        self._show_panel(
-            "Reasoning effort",
-            f"Level set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}",
+        hint = f"> Reasoning effort set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}"
+        self._render_history_with_hint(
+            hint,
+            fallback_title="Reasoning effort",
+            fallback_body=f"Level set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}",
         )
         self._render_status_bar()
 
@@ -1082,9 +1066,11 @@ class FlyinChatApp(App[None]):
         updated = set_model_context_window(self.paths.config_db, model_id=model.id, context_window=new_size)
         self._clear_selection()
         label = "1M" if new_size == 1_000_000 else "125K"
-        self._show_panel(
-            "Context window",
-            f"Context window set to **{label}** for {channel.name} / {updated.name}",
+        hint = f"> Context window set to **{label}** for {channel.name} / {updated.name}"
+        self._render_history_with_hint(
+            hint,
+            fallback_title="Context window",
+            fallback_body=f"Context window set to **{label}** for {channel.name} / {updated.name}",
         )
         self._render_status_bar()
 
@@ -1186,6 +1172,28 @@ class FlyinChatApp(App[None]):
     def _show_panel(self, title: str, body: str) -> None:
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update(f"## {title}\n\n{body}")
+
+    def _render_history_with_hint(self, hint: str, *, fallback_title: str = "", fallback_body: str = "") -> bool:
+        """Re-render conversation history with a transient hint appended. Falls back to _show_panel if no history."""
+        if self.paths is not None and self.active_conversation_id is not None:
+            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            if history:
+                lines: list[str] = []
+                for msg in history:
+                    if msg.role == "tool":
+                        lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+                    elif msg.role == "system":
+                        lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+                    else:
+                        role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                        lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
+                lines.append(hint)
+                self.query_one("#empty-state", Vertical).display = False
+                self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
+                self.query_one("#chat-area", Container).scroll_end(animate=False)
+                return True
+        self._show_panel(fallback_title, fallback_body)
+        return False
 
     def _render_streaming_assistant(self) -> None:
         if not self._streaming_assistant_text:
