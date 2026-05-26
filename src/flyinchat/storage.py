@@ -97,6 +97,14 @@ def initialize_config_db(path: Path) -> None:
             WHERE is_default = 1
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         _migrate_config_db(connection)
 
 
@@ -753,3 +761,20 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         tool_call_id=row["tool_call_id"],
         meta=row["meta"],
     )
+
+
+def get_app_setting(path: Path, key: str) -> str | None:
+    with _connect(path) as connection:
+        row = connection.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
+    return row["value"] if row else None
+
+
+def set_app_setting(path: Path, key: str, value: str) -> None:
+    with _connect(path) as connection:
+        connection.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )

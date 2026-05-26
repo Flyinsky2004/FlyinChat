@@ -285,7 +285,7 @@ def test_model_use_selects_primary_model(tmp_path: Path) -> None:
             assert primary is not None
             assert primary[0].name == "DeepSeek"
             assert primary[1].name == "deepseek-v4-flash"
-            assert "Primary model selected" in raw
+            assert "Primary model" in raw
             assert "deepseek-v4-flash" in raw
 
     asyncio.run(run_app())

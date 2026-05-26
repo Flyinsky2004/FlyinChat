@@ -12,6 +12,7 @@ from textual.containers import Container, Vertical
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
 from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
+from .i18n import I18nStore, Language, TKey
 from .logging_config import configure_logging
 from .message_utils import message_to_api_format, message_to_display
 from .models import LLMChannel, LLMModel
@@ -23,6 +24,7 @@ from .storage import (
     create_channel_with_models,
     create_conversation,
     create_preset_channel,
+    get_app_setting,
     get_conversation,
     get_primary_llm_model,
     initialize_storage,
@@ -31,6 +33,7 @@ from .storage import (
     list_llm_channels,
     list_llm_models,
     list_messages,
+    set_app_setting,
     set_model_context_window,
     set_model_reasoning_effort,
     set_model_thinking,
@@ -70,43 +73,12 @@ class FormState:
     values: tuple[str, ...]
 
 
-_COMMANDS = (
-    SelectionItem("/api", "/api", "LLM API provider settings"),
-    SelectionItem("/model", "/model", "Choose the primary model"),
-    SelectionItem("/thinking", "/thinking", "Toggle reasoning thinking mode on/off"),
-    SelectionItem("/reasoning", "/reasoning", "Set reasoning effort level (low/medium/high)"),
-    SelectionItem("/effort", "/effort", "Switch thinking effort level (low/medium/high/xhigh)"),
-    SelectionItem("/1M", "/1M", "Toggle 1M context window mode (125K ↔ 1M)"),
-    SelectionItem("/sessions", "/sessions", "Open project session history"),
-    SelectionItem("/clear", "/clear", "Start a new session"),
-    SelectionItem("/compact", "/compact", "Compact conversation history"),
-)
-
-_REASONING_LEVELS = (
-    SelectionItem("low", "low", "Fast, minimal reasoning"),
-    SelectionItem("medium", "medium", "Balanced reasoning"),
-    SelectionItem("high", "high", "Deep, thorough reasoning"),
-)
-
-_EFFORT_LEVELS = (
-    SelectionItem("low", "low", "Thinking off, minimal reasoning"),
-    SelectionItem("medium", "medium", "Thinking on, balanced reasoning"),
-    SelectionItem("high", "high", "Thinking on, deep reasoning"),
-    SelectionItem("xhigh", "xhigh", "Thinking on, maximum reasoning"),
-)
-
-_API_ACTIONS = (
-    SelectionItem("deepseek", "Add DeepSeek preset", "Only asks for an API key"),
-    SelectionItem("openai", "Add OpenAI-compatible channel", "Name, base URL, API key, models"),
-    SelectionItem("anthropic", "Add Anthropic channel", "Name, API key, models"),
-)
-
-
 class FlyinChatApp(App[None]):
     TITLE = "FlyinChat"
 
     def __init__(self, paths: AppPaths | None = None) -> None:
         super().__init__()
+        self.i18n = I18nStore()
         self.paths = paths
         self.active_conversation_id: str | None = None
         self.selection_context: str | None = None
@@ -133,6 +105,46 @@ class FlyinChatApp(App[None]):
         self._prompt_history: tuple[str, ...] = ()
         self._prompt_history_index: int | None = None
         self._prompt_history_draft = ""
+
+    def _get_commands(self) -> tuple[SelectionItem, ...]:
+        t = self.i18n.t
+        return (
+            SelectionItem("/api", t(TKey.CMD_API), t(TKey.CMD_API_DESC)),
+            SelectionItem("/model", t(TKey.CMD_MODEL), t(TKey.CMD_MODEL_DESC)),
+            SelectionItem("/thinking", t(TKey.CMD_THINKING), t(TKey.CMD_THINKING_DESC)),
+            SelectionItem("/reasoning", t(TKey.CMD_REASONING), t(TKey.CMD_REASONING_DESC)),
+            SelectionItem("/effort", t(TKey.CMD_EFFORT), t(TKey.CMD_EFFORT_DESC)),
+            SelectionItem("/1M", t(TKey.CMD_1M), t(TKey.CMD_1M_DESC)),
+            SelectionItem("/sessions", t(TKey.CMD_SESSIONS), t(TKey.CMD_SESSIONS_DESC)),
+            SelectionItem("/clear", t(TKey.CMD_CLEAR), t(TKey.CMD_CLEAR_DESC)),
+            SelectionItem("/compact", t(TKey.CMD_COMPACT), t(TKey.CMD_COMPACT_DESC)),
+            SelectionItem("/language", t(TKey.CMD_LANGUAGE), t(TKey.CMD_LANGUAGE_DESC)),
+        )
+
+    def _get_reasoning_levels(self) -> tuple[SelectionItem, ...]:
+        t = self.i18n.t
+        return (
+            SelectionItem("low", "low", t(TKey.REASONING_LOW)),
+            SelectionItem("medium", "medium", t(TKey.REASONING_MED)),
+            SelectionItem("high", "high", t(TKey.REASONING_HIGH)),
+        )
+
+    def _get_effort_levels(self) -> tuple[SelectionItem, ...]:
+        t = self.i18n.t
+        return (
+            SelectionItem("low", "low", t(TKey.EFFORT_LOW)),
+            SelectionItem("medium", "medium", t(TKey.EFFORT_MED)),
+            SelectionItem("high", "high", t(TKey.EFFORT_HIGH)),
+            SelectionItem("xhigh", "xhigh", t(TKey.EFFORT_XHIGH)),
+        )
+
+    def _get_api_actions(self) -> tuple[SelectionItem, ...]:
+        t = self.i18n.t
+        return (
+            SelectionItem("deepseek", t(TKey.API_DEEPSEEK_TITLE), t(TKey.API_DEEPSEEK_DESC)),
+            SelectionItem("openai", t(TKey.API_OPENAI_TITLE), t(TKey.API_OPENAI_DESC)),
+            SelectionItem("anthropic", t(TKey.API_ANTHROPIC_TITLE), t(TKey.API_ANTHROPIC_DESC)),
+        )
 
     CSS = """
     Screen {
@@ -224,20 +236,32 @@ class FlyinChatApp(App[None]):
 
     def compose(self) -> ComposeResult:
         self.paths = initialize_storage(self.paths)
+        self._load_language()
         self._init_tools()
 
+        t = self.i18n.t
         yield Header()
         with Container(id="chat-area"):
             with Vertical(id="empty-state"):
                 yield Static(_EMPTY_LOGO, id="empty-logo")
-                yield Static("Start a project-local conversation from the prompt below.", id="empty-hint")
+                yield Static(t(TKey.EMPTY_HINT), id="empty-hint")
             yield Markdown("", id="message-view")
         with Vertical(id="composer"):
             yield Static("", id="command-menu")
-            yield Static("Message", id="input-label")
-            yield Input(placeholder="Ask FlyinChat anything, or type / for commands", id="prompt-input")
+            yield Static(t(TKey.LABEL_MESSAGE), id="input-label")
+            yield Input(placeholder=t(TKey.PLACEHOLDER_INPUT), id="prompt-input")
             yield Static("", id="status-bar")
         yield Footer()
+
+    def _load_language(self) -> None:
+        if self.paths is None:
+            return
+        stored = get_app_setting(self.paths.config_db, "language")
+        if stored is not None:
+            try:
+                self.i18n.set_language(Language(stored))
+            except ValueError:
+                pass
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
@@ -329,14 +353,15 @@ class FlyinChatApp(App[None]):
             if conv is not None:
                 self._last_input_tokens = conv.last_input_tokens
                 self._total_output_tokens = conv.total_output_tokens
+            t = self.i18n.t
             history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
             history_display = "\n\n---\n\n".join(
-                f"**{'You' if msg.role == 'user' else 'Assistant'}**\n\n{self._message_to_display(msg)}"
+                f"**{t(TKey.LABEL_YOU) if msg.role == 'user' else t(TKey.LABEL_ASSISTANT)}**\n\n{self._message_to_display(msg)}"
                 for msg in history
             )
             prefix = (history_display + "\n\n---\n\n") if history_display else ""
             self.query_one("#message-view", Markdown).update(
-                f"{prefix}**Assistant**\n\n*[Error: {result.error}]*"
+                f"{prefix}**{t(TKey.LABEL_ASSISTANT)}**\n\n{t(TKey.MISC_ERROR_PREFIX, error=result.error)}"
             )
             self._render_status_bar()
             return
@@ -557,23 +582,40 @@ class FlyinChatApp(App[None]):
                 self._start_new_session()
             case "/compact":
                 self._run_compact()
+            case "/language":
+                self._toggle_language()
             case _:
-                self._show_panel("Unknown command", f"No command named {command}. Type / to see available commands.")
+                self._show_panel(
+                    self.i18n.t(TKey.PANEL_UNKNOWN_CMD),
+                    self.i18n.t(TKey.PANEL_UNKNOWN_CMD_BODY, command=command),
+                )
+
+    def _toggle_language(self) -> None:
+        new_lang = Language.ZH if self.i18n.language == Language.EN else Language.EN
+        self.i18n.set_language(new_lang)
+        if self.paths is not None:
+            set_app_setting(self.paths.config_db, "language", new_lang.value)
+        self._clear_selection()
+        self._show_panel(
+            self.i18n.t(TKey.CMD_LANGUAGE),
+            self.i18n.t(TKey.HINT_LANGUAGE_SET),
+        )
+        self._render_status_bar()
 
     def _show_command_menu(self, query: str) -> None:
         command_menu = self.query_one("#command-menu", Static)
-        matches = tuple(command for command in _COMMANDS if command.key.startswith(query))
+        matches = tuple(command for command in self._get_commands() if command.key.startswith(query))
         if not matches:
             self._clear_selection()
-            command_menu.update("No matching commands\nType /api, /model, /sessions, or /clear")
+            command_menu.update(self.i18n.t(TKey.CMENU_NO_MATCHES))
             command_menu.display = True
             return
 
         self._set_selection(
             context="main",
-            title="Commands",
+            title=self.i18n.t(TKey.CMENU_COMMANDS),
             items=matches,
-            footer="Use ↑/↓ to select, Tab to autocomplete, Enter to open.",
+            footer=self.i18n.t(TKey.CMENU_FOOTER),
             target_menu=True,
         )
 
@@ -622,31 +664,29 @@ class FlyinChatApp(App[None]):
 
         self._pending_permission_request_id = request_id
 
-        risk_badge = {"low": "⚠️ LOW", "medium": "⚠️ MEDIUM", "high": "❗ HIGH"}.get(
-            risk_level, risk_level.upper()
-        )
-        panel_body = (
-            f"## Permission Required\n\n"
-            f"**Tool:** {tool_name}\n\n"
-            f"**Risk:** {risk_badge}\n\n"
-            f"**Args:** `{args_preview}`\n\n"
-            f"**Reason:** {reason}\n\n"
-            f"---\n"
-            f"Press **Enter** to approve, or **n** to deny"
+        t = self.i18n.t
+        risk_labels = {"low": t(TKey.RISK_LOW), "medium": t(TKey.RISK_MEDIUM), "high": t(TKey.RISK_HIGH)}
+        risk_badge = risk_labels.get(risk_level, risk_level.upper())
+        panel_body = t(
+            TKey.PERM_TITLE,
+            tool=tool_name,
+            risk=risk_badge,
+            args=args_preview,
+            reason=reason,
         )
         self.query_one("#message-view", Markdown).update(panel_body)
         self.query_one("#empty-state", Vertical).display = False
-        self._set_input_prompt("Permission required", "Press Enter to approve, n to deny")
+        self._set_input_prompt(t(TKey.PERM_LABEL), t(TKey.PERM_PLACEHOLDER))
 
         items = (
-            SelectionItem("approve", "Approve - allow this tool to execute", ""),
-            SelectionItem("deny", "Deny - block this tool call", ""),
+            SelectionItem("approve", t(TKey.PERM_APPROVE), ""),
+            SelectionItem("deny", t(TKey.PERM_DENY), ""),
         )
         self._set_selection(
             context="permission_request",
-            title="⚖️ Action required",
+            title=t(TKey.PERM_ACTION_TITLE),
             items=items,
-            footer="↑/↓ select  |  Enter confirm  |  y=approve  n=deny  esc=deny",
+            footer=t(TKey.PERM_ACTION_FOOTER),
             target_menu=True,
         )
 
@@ -657,7 +697,8 @@ class FlyinChatApp(App[None]):
         self._pending_permission_request_id = None
         self._clear_selection()
         self.query_one("#command-menu", Static).display = False
-        self._set_input_prompt("Message", "Ask FlyinChat anything, or type / for commands")
+        t = self.i18n.t
+        self._set_input_prompt(t(TKey.LABEL_MESSAGE), t(TKey.PLACEHOLDER_INPUT))
 
     def _add_api_channel(self, command: str) -> None:
         if self.paths is None:
@@ -702,7 +743,7 @@ class FlyinChatApp(App[None]):
                 raise ValueError("Supported channel types: deepseek, openai, anthropic")
         except ValueError as error:
             self._clear_selection()
-            self._show_panel("API setup error", str(error))
+            self._show_panel(self.i18n.t(TKey.PANEL_API_SETUP_ERR), str(error))
             return
 
         self._clear_selection()
@@ -712,42 +753,44 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
+        t = self.i18n.t
         channels = list_llm_channels(self.paths.config_db)
-        header = "\n".join(("Configured channels", self._format_channels(channels), "", "Presets", *self._format_presets(), ""))
+        header = t(TKey.SEL_API_HEADER, channels=self._format_channels(channels), presets="\n".join(self._format_presets()))
         self._set_selection(
             context="api_actions",
-            title="LLM API providers",
-            items=_API_ACTIONS,
+            title=t(TKey.SEL_API_TITLE),
+            items=self._get_api_actions(),
             header=header,
-            footer="Use ↑/↓ to choose an action, Enter to continue.",
+            footer=t(TKey.SEL_API_FOOTER),
         )
 
     def _show_model_settings(self) -> None:
         if self.paths is None:
             return
 
+        t = self.i18n.t
         channels = list_llm_channels(self.paths.config_db)
         if not channels:
             self._clear_selection()
-            self._show_panel("Primary model", "No API providers configured yet. Add one with /api.")
+            self._show_panel(t(TKey.PANEL_PRIMARY_MODEL), t(TKey.PANEL_NO_PROVIDERS))
             return
 
         primary = get_primary_llm_model(self.paths.config_db)
-        rows = ["Configured provider models"]
+        rows = [t(TKey.SEL_MODEL_HEADER)]
         items: list[SelectionItem] = []
         for channel_index, channel in enumerate(channels, start=1):
             models = list_llm_models(self.paths.config_db, channel_id=channel.id)
             rows.append(f"{channel_index}. {channel.name} · {channel.provider_type}")
             for model_index, model in enumerate(models, start=1):
                 rows.append(self._format_model_row(channel_index, model_index, model, primary))
-                items.append(SelectionItem(model.id, f"{channel.name} / {model.name}", "Set as primary model"))
+                items.append(SelectionItem(model.id, f"{channel.name} / {model.name}", t(TKey.CMD_MODEL_DESC)))
 
         self._set_selection(
             context="model_select",
-            title="Primary model",
+            title=t(TKey.SEL_MODEL_TITLE),
             items=tuple(items),
             header="\n".join(rows),
-            footer="Use ↑/↓ to choose a model, Enter to set primary.",
+            footer=t(TKey.SEL_MODEL_FOOTER),
         )
 
     def _select_primary_model(self, command: str) -> None:
@@ -767,7 +810,7 @@ class FlyinChatApp(App[None]):
             selected_channel, selected_model = set_primary_llm_model(self.paths.config_db, model_id=model.id)
         except (IndexError, ValueError):
             self._clear_selection()
-            self._show_panel("Model selection error", "Usage: /model use <channel> <model>")
+            self._show_panel(self.i18n.t(TKey.PANEL_MODEL_SELECT_ERR), self.i18n.t(TKey.PANEL_MODEL_SELECT_USAGE))
             return
 
         self._clear_selection()
@@ -780,7 +823,7 @@ class FlyinChatApp(App[None]):
         conversations = list_conversations(self.paths.chat_db)
         if not conversations:
             self._clear_selection()
-            self._show_panel("Session history", "No project-local sessions yet. Send a message to create one.")
+            self._show_panel(self.i18n.t(TKey.PANEL_SESSION_HISTORY), self.i18n.t(TKey.PANEL_NO_SESSIONS))
             return
 
         items = tuple(
@@ -789,9 +832,9 @@ class FlyinChatApp(App[None]):
         )
         self._set_selection(
             context="session_select",
-            title="Session history",
+            title=self.i18n.t(TKey.SEL_SESSION_TITLE),
             items=items,
-            footer="Use ↑/↓ to choose a session, Enter to select.",
+            footer=self.i18n.t(TKey.SEL_SESSION_FOOTER),
         )
 
     def _start_new_session(self) -> None:
@@ -803,18 +846,19 @@ class FlyinChatApp(App[None]):
         self._load_prompt_history()
         self._clear_selection()
         self.query_one("#empty-state", Vertical).display = True
-        self._show_panel("New session", "Ready for a new project-local conversation.")
+        self._show_panel(self.i18n.t(TKey.PANEL_NEW_SESSION), self.i18n.t(TKey.PANEL_NEW_SESSION_BODY))
         self._render_status_bar()
 
     @work
     async def _run_compact(self) -> None:
+        t = self.i18n.t
         if self.paths is None or self.active_conversation_id is None:
-            self._show_panel("Compact", "No active conversation to compact.")
+            self._show_panel(t(TKey.PANEL_COMPACT), t(TKey.PANEL_NO_CONVERSATION))
             return
 
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
-            self._show_panel("Compact", "No model configured. Add one with `/api`, then `/model`.")
+            self._show_panel(t(TKey.PANEL_COMPACT), t(TKey.PANEL_NO_MODEL))
             return
 
         channel, model = primary
@@ -829,9 +873,8 @@ class FlyinChatApp(App[None]):
         if already_compacted and estimated <= policy.soft_limit:
             self._clear_selection()
             self._show_panel(
-                "Compact",
-                f"Already compacted — {estimated // 1000}K tokens is within budget "
-                f"({policy.soft_limit // 1000}K limit).",
+                t(TKey.PANEL_COMPACT),
+                t(TKey.PANEL_COMPACT_OK, tokens=estimated // 1000, limit=policy.soft_limit // 1000),
             )
             return
 
@@ -843,6 +886,7 @@ class FlyinChatApp(App[None]):
         engine = CompactionEngine(
             self.paths.chat_db,
             self.active_conversation_id,
+            _i18n=self.i18n,
         )
         self._compacting = True
         self._render_status_bar()
@@ -856,15 +900,15 @@ class FlyinChatApp(App[None]):
             after_k = result.tokens_after // 1000
             self._clear_selection()
             self._show_panel(
-                "Conversation compacted",
+                t(TKey.PANEL_COMPACT_DONE),
                 f"Strategy: {result.strategy}\nTokens: {before_k}K → {after_k}K",
             )
             self._render_history()
             self._render_status_bar()
         else:
             self._show_panel(
-                "Compact",
-                "Compaction not needed — conversation is within token budget.",
+                t(TKey.PANEL_COMPACT),
+                t(TKey.PANEL_COMPACT_NOT_NEEDED),
             )
             self._render_status_bar()
 
@@ -877,7 +921,7 @@ class FlyinChatApp(App[None]):
         if self.form_state is None or self.paths is None:
             return
         if not value:
-            self._show_panel("Input required", "Please enter a value to continue.")
+            self._show_panel(self.i18n.t(TKey.PANEL_INPUT_REQUIRED), self.i18n.t(TKey.PANEL_INPUT_PROMPT))
             self._render_form_prompt()
             return
 
@@ -914,8 +958,9 @@ class FlyinChatApp(App[None]):
         except ValueError as error:
             self.form_state = None
             input_widget.value = ""
-            self._set_input_prompt("Message", "Ask FlyinChat anything, or type / for commands")
-            self._show_panel("API setup error", str(error))
+            t = self.i18n.t
+            self._set_input_prompt(t(TKey.LABEL_MESSAGE), t(TKey.PLACEHOLDER_INPUT))
+            self._show_panel(self.i18n.t(TKey.PANEL_API_SETUP_ERR), str(error))
             return
 
         self.form_state = None
@@ -931,29 +976,31 @@ class FlyinChatApp(App[None]):
         field = fields[self.form_state.step]
         self._set_input_prompt(field, field)
         self._show_panel(
-            "Add API channel",
-            f"{self._api_form_title(self.form_state.kind)}\nStep {self.form_state.step + 1}/{len(fields)}: {field}",
+            self.i18n.t(TKey.PANEL_ADD_API),
+            self.i18n.t(TKey.FORM_STEP, step=self.form_state.step + 1, total=len(fields), field=field),
         )
 
     def _api_form_fields(self, kind: str) -> tuple[str, ...]:
+        t = self.i18n.t
         match kind:
             case "deepseek":
-                return ("DeepSeek API key",)
+                return (t(TKey.FORM_DEEPSEEK_KEY),)
             case "openai":
-                return ("Channel name", "Base URL", "API key", "Models, comma separated")
+                return (t(TKey.FORM_OPENAI_NAME), t(TKey.FORM_OPENAI_URL), t(TKey.FORM_OPENAI_KEY), t(TKey.FORM_OPENAI_MODELS))
             case "anthropic":
-                return ("Channel name", "API key", "Models, comma separated")
+                return (t(TKey.FORM_ANTHROPIC_NAME), t(TKey.FORM_ANTHROPIC_KEY), t(TKey.FORM_ANTHROPIC_MODELS))
             case _:
                 return ()
 
     def _api_form_title(self, kind: str) -> str:
+        t = self.i18n.t
         match kind:
             case "deepseek":
-                return "DeepSeek preset"
+                return t(TKey.FORM_DEEPSEEK_TITLE)
             case "openai":
-                return "OpenAI-compatible channel"
+                return t(TKey.FORM_OPENAI_TITLE)
             case "anthropic":
-                return "Anthropic channel"
+                return t(TKey.FORM_ANTHROPIC_TITLE)
             case _:
                 return "API channel"
 
@@ -968,16 +1015,17 @@ class FlyinChatApp(App[None]):
     def _show_channel_added(self, channel: LLMChannel, models: list[LLMModel]) -> None:
         model_names = ", ".join(model.name for model in models)
         self._show_panel(
-            "API channel added",
-            f"{channel.name}\n{channel.provider_type}\n{channel.base_url or 'default endpoint'}\nmodels: {model_names}",
+            self.i18n.t(TKey.PANEL_API_CHANNEL_ADDED),
+            f"{channel.name}\n{channel.provider_type}\n{channel.base_url or self.i18n.t(TKey.MISC_DEFAULT_ENDPOINT)}\nmodels: {model_names}",
         )
 
     def _show_primary_model_selected(self, channel: LLMChannel, model: LLMModel) -> None:
         self._last_usage = {}
-        hint = f"> Primary model set to **{channel.name} / {model.name}**"
+        t = self.i18n.t
+        hint = t(TKey.HINT_PRIMARY_MODEL, channel=channel.name, model=model.name)
         self._render_history_with_hint(
             hint,
-            fallback_title="Primary model selected",
+            fallback_title=t(TKey.PANEL_PRIMARY_MODEL),
             fallback_body=f"{channel.name}\n{model.name}",
         )
         self._render_status_bar()
@@ -986,24 +1034,25 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
+        t = self.i18n.t
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
             self._clear_selection()
-            self._show_panel("Thinking mode", "No primary model configured. Set one with /model.")
+            self._show_panel(t(TKey.PANEL_THINKING_MODE), t(TKey.PANEL_THINKING_NO_MODEL))
             return
 
         channel, model = primary
         status = "enabled" if model.thinking_enabled else "disabled"
         options = (
-            SelectionItem("on", "Enable thinking", "Turn reasoning thinking on"),
-            SelectionItem("off", "Disable thinking", "Turn reasoning thinking off"),
+            SelectionItem("on", t(TKey.SEL_THINKING_ON), t(TKey.SEL_THINKING_ON_DESC)),
+            SelectionItem("off", t(TKey.SEL_THINKING_OFF), t(TKey.SEL_THINKING_OFF_DESC)),
         )
         self._set_selection(
             context="thinking_toggle",
-            title="Thinking mode",
+            title=t(TKey.SEL_THINKING_TITLE),
             items=options,
             header=f"{channel.name} / {model.name}\nThinking is currently {status}",
-            footer="Use ↑/↓ to choose, Enter to toggle.",
+            footer=t(TKey.SEL_THINKING_FOOTER),
         )
 
     def _toggle_thinking(self, action: str) -> None:
@@ -1019,28 +1068,33 @@ class FlyinChatApp(App[None]):
         enabled = action == "on"
         updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=enabled)
         self._clear_selection()
-        status = "enabled" if updated.thinking_enabled else "disabled"
-        hint = f"> Thinking is now **{status}** for {primary[0].name} / {updated.name}"
-        self._render_history_with_hint(hint, fallback_title="Thinking mode", fallback_body=hint.lstrip("> "))
+        t = self.i18n.t
+        channel = primary[0].name
+        if updated.thinking_enabled:
+            hint = t(TKey.HINT_THINKING_ON, channel=channel, model=updated.name)
+        else:
+            hint = t(TKey.HINT_THINKING_OFF, channel=channel, model=updated.name)
+        self._render_history_with_hint(hint, fallback_title=t(TKey.PANEL_THINKING_MODE), fallback_body=hint.lstrip("> "))
         self._render_status_bar()
 
     def _show_reasoning_settings(self) -> None:
         if self.paths is None:
             return
 
+        t = self.i18n.t
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
             self._clear_selection()
-            self._show_panel("Reasoning effort", "No primary model configured. Set one with /model.")
+            self._show_panel(t(TKey.PANEL_REASONING_EFFORT), t(TKey.PANEL_REASONING_NO_MODEL))
             return
 
         channel, model = primary
         self._set_selection(
             context="reasoning_select",
-            title="Reasoning effort",
-            items=_REASONING_LEVELS,
+            title=t(TKey.SEL_REASONING_TITLE),
+            items=self._get_reasoning_levels(),
             header=f"{channel.name} / {model.name}\nCurrent level: {model.reasoning_effort}",
-            footer="Use ↑/↓ to choose, Enter to set.",
+            footer=t(TKey.SEL_REASONING_FOOTER),
         )
 
     def _set_reasoning_effort(self, level: str) -> None:
@@ -1055,10 +1109,11 @@ class FlyinChatApp(App[None]):
         model = primary[1]
         updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
         self._clear_selection()
-        hint = f"> Reasoning effort set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}"
+        t = self.i18n.t
+        hint = t(TKey.HINT_REASONING_SET, effort=updated.reasoning_effort, channel=primary[0].name, model=updated.name)
         self._render_history_with_hint(
             hint,
-            fallback_title="Reasoning effort",
+            fallback_title=t(TKey.PANEL_REASONING_EFFORT),
             fallback_body=f"Level set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}",
         )
         self._render_status_bar()
@@ -1067,10 +1122,11 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
+        t = self.i18n.t
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
             self._clear_selection()
-            self._show_panel("Effort level", "No primary model configured. Set one with /model.")
+            self._show_panel(t(TKey.PANEL_EFFORT_LEVEL), t(TKey.PANEL_EFFORT_NO_MODEL))
             return
 
         channel, model = primary
@@ -1081,10 +1137,10 @@ class FlyinChatApp(App[None]):
 
         self._set_selection(
             context="effort_select",
-            title="Effort level",
-            items=_EFFORT_LEVELS,
+            title=t(TKey.SEL_EFFORT_TITLE),
+            items=self._get_effort_levels(),
             header=f"{channel.name} / {model.name}\nCurrent: {current}",
-            footer="Use ↑/↓ to choose, Enter to set.",
+            footer=t(TKey.SEL_EFFORT_FOOTER),
         )
 
     def _set_effort(self, level: str) -> None:
@@ -1103,13 +1159,14 @@ class FlyinChatApp(App[None]):
             updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=True)
             updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
         self._clear_selection()
+        t = self.i18n.t
         if updated.thinking_enabled:
-            hint = f"> Effort set to **think on, {updated.reasoning_effort}** for {primary[0].name} / {updated.name}"
+            hint = t(TKey.HINT_EFFORT_ON, effort=updated.reasoning_effort, channel=primary[0].name, model=updated.name)
         else:
-            hint = f"> Effort set to **think off (low)** for {primary[0].name} / {updated.name}"
+            hint = t(TKey.HINT_EFFORT_OFF, channel=primary[0].name, model=updated.name)
         self._render_history_with_hint(
             hint,
-            fallback_title="Effort level",
+            fallback_title=t(TKey.PANEL_EFFORT_LEVEL),
             fallback_body=hint.lstrip("> "),
         )
         self._render_status_bar()
@@ -1118,10 +1175,11 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
+        t = self.i18n.t
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
             self._clear_selection()
-            self._show_panel("Context window", "No primary model configured. Set one with /model.")
+            self._show_panel(t(TKey.PANEL_CTX_WINDOW), t(TKey.PANEL_CTX_NO_MODEL))
             return
 
         channel, model = primary
@@ -1129,25 +1187,26 @@ class FlyinChatApp(App[None]):
         updated = set_model_context_window(self.paths.config_db, model_id=model.id, context_window=new_size)
         self._clear_selection()
         label = "1M" if new_size == 1_000_000 else "125K"
-        hint = f"> Context window set to **{label}** for {channel.name} / {updated.name}"
+        hint = t(TKey.HINT_CTX_SET, label=label, channel=channel.name, model=updated.name)
         self._render_history_with_hint(
             hint,
-            fallback_title="Context window",
+            fallback_title=t(TKey.PANEL_CTX_WINDOW),
             fallback_body=f"Context window set to **{label}** for {channel.name} / {updated.name}",
         )
         self._render_status_bar()
 
     def _format_channels(self, channels: list[LLMChannel]) -> str:
+        t = self.i18n.t
         if self.paths is None:
-            return "No providers configured yet."
+            return t(TKey.MISC_NO_PROVIDERS)
         if not channels:
-            return "No providers configured yet. Select a preset below to add one."
+            return t(TKey.MISC_NO_PROVIDERS_ADD)
 
         rows: list[str] = []
         for index, channel in enumerate(channels, start=1):
             models = list_llm_models(self.paths.config_db, channel_id=channel.id)
-            model_names = ", ".join(model.name for model in models) or "No models"
-            endpoint = channel.base_url or "default endpoint"
+            model_names = ", ".join(model.name for model in models) or t(TKey.MISC_NO_MODELS)
+            endpoint = channel.base_url or t(TKey.MISC_DEFAULT_ENDPOINT)
             rows.append(
                 f"{index}. {channel.name} · {channel.provider_type} · {endpoint} · key {self._mask_api_key(channel.api_key)}\n"
                 f"   models: {model_names}"
@@ -1161,8 +1220,8 @@ class FlyinChatApp(App[None]):
         model: LLMModel,
         primary: tuple[LLMChannel, LLMModel] | None,
     ) -> str:
-        marker = " [primary]" if primary is not None and primary[1].id == model.id else ""
-        return f"   {channel_index}.{model_index} {model.name}{marker}"
+        marker = self.i18n.t(TKey.MISC_PRIMARY_MARKER) if primary is not None and primary[1].id == model.id else ""
+        return self.i18n.t(TKey.MISC_MODEL_ROW, ci=channel_index, mi=model_index, name=model.name, marker=marker)
 
     def _format_presets(self) -> list[str]:
         rows: list[str] = []
@@ -1226,7 +1285,8 @@ class FlyinChatApp(App[None]):
 
     def _reset_selection(self) -> None:
         self._clear_selection()
-        self._set_input_prompt("Message", "Ask FlyinChat anything, or type / for commands")
+        t = self.i18n.t
+        self._set_input_prompt(t(TKey.LABEL_MESSAGE), t(TKey.PLACEHOLDER_INPUT))
 
     def _set_input_prompt(self, label: str, placeholder: str) -> None:
         self.query_one("#input-label", Static).update(label)
@@ -1241,14 +1301,15 @@ class FlyinChatApp(App[None]):
         if self.paths is not None and self.active_conversation_id is not None:
             history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
             if history:
+                t = self.i18n.t
                 lines: list[str] = []
                 for msg in history:
                     if msg.role == "tool":
-                        lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+                        lines.append(f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}")
                     elif msg.role == "system":
-                        lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+                        lines.append(f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}")
                     else:
-                        role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                        role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
                         lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
                 lines.append(hint)
                 self.query_one("#empty-state", Vertical).display = False
@@ -1269,18 +1330,19 @@ class FlyinChatApp(App[None]):
             return
         self._last_stream_render_at = now
 
+        t = self.i18n.t
         history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
         lines: list[str] = []
         for msg in history:
             if msg.role == "tool":
-                lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+                lines.append(f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}")
             elif msg.role == "system":
-                lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+                lines.append(f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}")
             else:
-                role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
                 lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
 
-        lines.append(f"**Assistant**\n\n{self._streaming_assistant_text}")
+        lines.append(f"**{t(TKey.LABEL_ASSISTANT)}**\n\n{self._streaming_assistant_text}")
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
         self.query_one("#chat-area", Container).scroll_end(animate=False)
@@ -1289,27 +1351,28 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
+        t = self.i18n.t
         if self._compacting:
-            self.query_one("#status-bar", Static).update("⏳ Compacting conversation history...")
+            self.query_one("#status-bar", Static).update(t(TKey.STATUS_COMPACTING))
             return
 
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
-            self.query_one("#status-bar", Static).update("No model configured — use /api then /model")
+            self.query_one("#status-bar", Static).update(t(TKey.STATUS_NO_MODEL))
             return
 
         channel, model = primary
         parts = [f"{channel.name} / {model.name}"]
 
         think_label = "ON" if model.thinking_enabled else "OFF"
-        parts.append(f"Think: {think_label}")
+        parts.append(t(TKey.STATUS_THINK, status=think_label))
         parts.append(f"Effort: {model.reasoning_effort}")
         ctx_label = "1M" if model.context_window >= 1_000_000 else f"{model.context_window // 1000}K"
         parts.append(f"Ctx: {ctx_label}")
 
         if self.active_conversation_id is not None:
             msgs = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-            parts.append(f"{len(msgs)} msgs")
+            parts.append(t(TKey.STATUS_MSGS, count=len(msgs)))
 
             inp = self._last_input_tokens
             if inp or self._total_output_tokens:
@@ -1320,7 +1383,7 @@ class FlyinChatApp(App[None]):
                 else:
                     parts.append(f"↑{inp} ↓{self._total_output_tokens}")
         else:
-            parts.append("No conversation")
+            parts.append(t(TKey.STATUS_NO_CONV))
 
         self.query_one("#status-bar", Static).update("  |  ".join(parts))
 
@@ -1332,17 +1395,18 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = False
 
         if not history:
-            self.query_one("#message-view", Markdown).update("_No messages_")
+            self.query_one("#message-view", Markdown).update(self.i18n.t(TKey.MISC_NO_MESSAGES))
             return
 
+        t = self.i18n.t
         lines: list[str] = []
         for msg in history:
             if msg.role == "tool":
-                lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+                lines.append(f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}")
             elif msg.role == "system":
-                lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+                lines.append(f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}")
             else:
-                role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
                 lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
 
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
@@ -1350,7 +1414,7 @@ class FlyinChatApp(App[None]):
 
     def _mask_api_key(self, api_key: str) -> str:
         if len(api_key) <= 6:
-            return "configured"
+            return self.i18n.t(TKey.MISC_CONFIGURED)
         return f"{api_key[:3]}...{api_key[-2:]}"
 
 def run() -> None:

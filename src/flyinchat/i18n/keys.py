@@ -1,0 +1,179 @@
+from enum import StrEnum
+
+
+class TKey(StrEnum):
+    # ── Commands ──
+    CMD_API = "cmd.api"
+    CMD_API_DESC = "cmd.api.desc"
+    CMD_MODEL = "cmd.model"
+    CMD_MODEL_DESC = "cmd.model.desc"
+    CMD_THINKING = "cmd.thinking"
+    CMD_THINKING_DESC = "cmd.thinking.desc"
+    CMD_REASONING = "cmd.reasoning"
+    CMD_REASONING_DESC = "cmd.reasoning.desc"
+    CMD_EFFORT = "cmd.effort"
+    CMD_EFFORT_DESC = "cmd.effort.desc"
+    CMD_1M = "cmd.1m"
+    CMD_1M_DESC = "cmd.1m.desc"
+    CMD_SESSIONS = "cmd.sessions"
+    CMD_SESSIONS_DESC = "cmd.sessions.desc"
+    CMD_CLEAR = "cmd.clear"
+    CMD_CLEAR_DESC = "cmd.clear.desc"
+    CMD_COMPACT = "cmd.compact"
+    CMD_COMPACT_DESC = "cmd.compact.desc"
+    CMD_LANGUAGE = "cmd.language"
+    CMD_LANGUAGE_DESC = "cmd.language.desc"
+
+    # ── Reasoning levels ──
+    REASONING_LOW = "reasoning.low"
+    REASONING_MED = "reasoning.med"
+    REASONING_HIGH = "reasoning.high"
+
+    # ── Effort levels ──
+    EFFORT_LOW = "effort.low"
+    EFFORT_MED = "effort.med"
+    EFFORT_HIGH = "effort.high"
+    EFFORT_XHIGH = "effort.xhigh"
+
+    # ── API actions ──
+    API_DEEPSEEK_TITLE = "api.deepseek.title"
+    API_DEEPSEEK_DESC = "api.deepseek.desc"
+    API_OPENAI_TITLE = "api.openai.title"
+    API_OPENAI_DESC = "api.openai.desc"
+    API_ANTHROPIC_TITLE = "api.anthropic.title"
+    API_ANTHROPIC_DESC = "api.anthropic.desc"
+
+    # ── Role labels ──
+    LABEL_YOU = "label.you"
+    LABEL_ASSISTANT = "label.assistant"
+    LABEL_TOOL = "label.tool"
+    LABEL_SYSTEM = "label.system"
+    LABEL_MESSAGE = "label.message"
+
+    # ── Placeholders ──
+    PLACEHOLDER_INPUT = "placeholder.input"
+    PLACEHOLDER_PERMISSION = "placeholder.permission"
+
+    # ── Empty state ──
+    EMPTY_HINT = "empty.hint"
+
+    # ── Command menu ──
+    CMENU_NO_MATCHES = "cmenu.no_matches"
+    CMENU_COMMANDS = "cmenu.commands"
+    CMENU_FOOTER = "cmenu.footer"
+
+    # ── Panels ──
+    PANEL_UNKNOWN_CMD = "panel.unknown_cmd"
+    PANEL_UNKNOWN_CMD_BODY = "panel.unknown_cmd.body"
+    PANEL_API_SETUP_ERR = "panel.api_setup_err"
+    PANEL_API_CHANNEL_ADDED = "panel.api_channel_added"
+    PANEL_PRIMARY_MODEL = "panel.primary_model"
+    PANEL_NO_PROVIDERS = "panel.no_providers"
+    PANEL_MODEL_SELECT_ERR = "panel.model_select_err"
+    PANEL_MODEL_SELECT_USAGE = "panel.model_select_usage"
+    PANEL_SESSION_HISTORY = "panel.session_history"
+    PANEL_NO_SESSIONS = "panel.no_sessions"
+    PANEL_NEW_SESSION = "panel.new_session"
+    PANEL_NEW_SESSION_BODY = "panel.new_session.body"
+    PANEL_COMPACT = "panel.compact"
+    PANEL_NO_CONVERSATION = "panel.no_conversation"
+    PANEL_NO_MODEL = "panel.no_model"
+    PANEL_COMPACT_OK = "panel.compact_ok"
+    PANEL_COMPACT_DONE = "panel.compact_done"
+    PANEL_COMPACT_NOT_NEEDED = "panel.compact_not_needed"
+    PANEL_INPUT_REQUIRED = "panel.input_required"
+    PANEL_INPUT_PROMPT = "panel.input_prompt"
+    PANEL_ADD_API = "panel.add_api"
+    PANEL_THINKING_MODE = "panel.thinking_mode"
+    PANEL_THINKING_NO_MODEL = "panel.thinking_no_model"
+    PANEL_REASONING_EFFORT = "panel.reasoning_effort"
+    PANEL_REASONING_NO_MODEL = "panel.reasoning_no_model"
+    PANEL_EFFORT_LEVEL = "panel.effort_level"
+    PANEL_EFFORT_NO_MODEL = "panel.effort_no_model"
+    PANEL_CTX_WINDOW = "panel.ctx_window"
+    PANEL_CTX_NO_MODEL = "panel.ctx_no_model"
+
+    # ── API form ──
+    FORM_DEEPSEEK_KEY = "form.deepseek.key"
+    FORM_OPENAI_NAME = "form.openai.name"
+    FORM_OPENAI_URL = "form.openai.url"
+    FORM_OPENAI_KEY = "form.openai.key"
+    FORM_OPENAI_MODELS = "form.openai.models"
+    FORM_ANTHROPIC_NAME = "form.anthropic.name"
+    FORM_ANTHROPIC_KEY = "form.anthropic.key"
+    FORM_ANTHROPIC_MODELS = "form.anthropic.models"
+    FORM_DEEPSEEK_TITLE = "form.deepseek.title"
+    FORM_OPENAI_TITLE = "form.openai.title"
+    FORM_ANTHROPIC_TITLE = "form.anthropic.title"
+    FORM_STEP = "form.step"
+
+    # ── Selection UI ──
+    SEL_API_TITLE = "sel.api.title"
+    SEL_API_HEADER = "sel.api.header"
+    SEL_API_FOOTER = "sel.api.footer"
+    SEL_MODEL_TITLE = "sel.model.title"
+    SEL_MODEL_HEADER = "sel.model.header"
+    SEL_MODEL_FOOTER = "sel.model.footer"
+    SEL_THINKING_TITLE = "sel.thinking.title"
+    SEL_THINKING_ON = "sel.thinking.on"
+    SEL_THINKING_ON_DESC = "sel.thinking.on.desc"
+    SEL_THINKING_OFF = "sel.thinking.off"
+    SEL_THINKING_OFF_DESC = "sel.thinking.off.desc"
+    SEL_THINKING_FOOTER = "sel.thinking.footer"
+    SEL_REASONING_TITLE = "sel.reasoning.title"
+    SEL_REASONING_FOOTER = "sel.reasoning.footer"
+    SEL_EFFORT_TITLE = "sel.effort.title"
+    SEL_EFFORT_FOOTER = "sel.effort.footer"
+    SEL_SESSION_TITLE = "sel.session.title"
+    SEL_SESSION_FOOTER = "sel.session.footer"
+
+    # ── Status bar ──
+    STATUS_COMPACTING = "status.compacting"
+    STATUS_NO_MODEL = "status.no_model"
+    STATUS_THINK = "status.think"
+    STATUS_NO_CONV = "status.no_conv"
+    STATUS_MSGS = "status.msgs"
+
+    # ── Thinking / Effort hints ──
+    HINT_THINKING_ON = "hint.thinking.on"
+    HINT_THINKING_OFF = "hint.thinking.off"
+    HINT_REASONING_SET = "hint.reasoning.set"
+    HINT_EFFORT_ON = "hint.effort.on"
+    HINT_EFFORT_OFF = "hint.effort.off"
+    HINT_CTX_SET = "hint.ctx.set"
+    HINT_PRIMARY_MODEL = "hint.primary_model"
+    HINT_LANGUAGE_SET = "hint.language.set"
+
+    # ── Permission request ──
+    PERM_TITLE = "perm.title"
+    PERM_LABEL = "perm.label"
+    PERM_PLACEHOLDER = "perm.placeholder"
+    PERM_APPROVE = "perm.approve"
+    PERM_DENY = "perm.deny"
+    PERM_ACTION_TITLE = "perm.action.title"
+    PERM_ACTION_FOOTER = "perm.action.footer"
+
+    # ── Risk badges ──
+    RISK_LOW = "risk.low"
+    RISK_MEDIUM = "risk.medium"
+    RISK_HIGH = "risk.high"
+
+    # ── Misc ──
+    MISC_NO_MESSAGES = "misc.no_messages"
+    MISC_NO_PROVIDERS = "misc.no_providers"
+    MISC_NO_PROVIDERS_ADD = "misc.no_providers_add"
+    MISC_DEFAULT_ENDPOINT = "misc.default_endpoint"
+    MISC_NO_MODELS = "misc.no_models"
+    MISC_CONFIGURED = "misc.configured"
+    MISC_PRIMARY_MARKER = "misc.primary_marker"
+    MISC_MODEL_ROW = "misc.model_row"
+    MISC_ERROR_PREFIX = "misc.error_prefix"
+
+    # ── Compact engine ──
+    COMPACT_SUMMARY_PROMPT = "compact.summary_prompt"
+    COMPACT_CONVERSATION_HISTORY = "compact.conversation_history"
+    COMPACT_OUTPUT_SUMMARY = "compact.output_summary"
+    COMPACT_ROLE_USER = "compact.role.user"
+    COMPACT_ROLE_ASSISTANT = "compact.role.assistant"
+    COMPACT_ROLE_TOOL = "compact.role.tool"
+    COMPACT_ROLE_SYSTEM = "compact.role.system"

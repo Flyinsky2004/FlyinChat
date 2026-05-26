@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from flyinchat.api_client import chat_completion
+from flyinchat.i18n import I18nStore, TKey
 from flyinchat.models import LLMChannel, LLMModel, Message
 from flyinchat.storage import (
     add_message,
@@ -78,6 +79,7 @@ class CompactionEngine:
     _chat_db: Path
     _conversation_id: str
     _estimator: TokenEstimator = field(default_factory=TokenEstimator)
+    _i18n: I18nStore = field(default_factory=I18nStore)
 
     def compact_if_needed(
         self,
@@ -326,11 +328,16 @@ class CompactionEngine:
         model: LLMModel,
         channel: LLMChannel,
     ) -> str:
+        t = self._i18n.t
+        role_labels = {
+            "user": t(TKey.COMPACT_ROLE_USER),
+            "assistant": t(TKey.COMPACT_ROLE_ASSISTANT),
+            "tool": t(TKey.COMPACT_ROLE_TOOL),
+            "system": t(TKey.COMPACT_ROLE_SYSTEM),
+        }
         history_parts: list[str] = []
         for msg in messages:
-            role_label = {"user": "用户", "assistant": "助手", "tool": "工具", "system": "系统"}.get(
-                msg.role, msg.role
-            )
+            role_label = role_labels.get(msg.role, msg.role)
             try:
                 parsed = json.loads(msg.content)
                 if isinstance(parsed, list):
@@ -354,17 +361,12 @@ class CompactionEngine:
 
         history_text = "\n".join(history_parts)
 
-        summary_prompt = f"""请将以下对话历史总结成简洁的摘要。保留：
-- 用户的主要请求和目标
-- 助手使用的工具及其关键结果
-- 重要的决策和结论
+        summary_prompt = f"""{t(TKey.COMPACT_SUMMARY_PROMPT)}
 
-摘要应该用中文，尽量简洁但不要丢失关键信息。
-
-对话历史：
+{t(TKey.COMPACT_CONVERSATION_HISTORY)}
 {history_text}
 
-请输出摘要："""
+{t(TKey.COMPACT_OUTPUT_SUMMARY)}"""
 
         summary_messages: list[dict] = [
             {"role": "user", "content": summary_prompt},
