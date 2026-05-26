@@ -127,6 +127,7 @@ EN: dict[TKey, str] = {
     TKey.SEL_SESSION_FOOTER: "Use ↑/↓ to choose a session, Enter to select.",
 
     # ── Status bar ──
+    TKey.STATUS_WORKING: "Working",
     TKey.STATUS_COMPACTING: "Compacting conversation history...",
     TKey.STATUS_NO_MODEL: "No model configured — use /api then /model",
     TKey.STATUS_THINK: "Think: {status}",

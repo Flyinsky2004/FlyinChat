@@ -75,6 +75,7 @@ class FormState:
 
 class FlyinChatApp(App[None]):
     TITLE = "FlyinChat"
+    SPINNER_FRAMES = ("|", "/", "—", "\\")
 
     def __init__(self, paths: AppPaths | None = None) -> None:
         super().__init__()
@@ -98,6 +99,9 @@ class FlyinChatApp(App[None]):
         self._tool_context: ToolContext | None = None
         self._query_engine: QueryEngine | None = None
         self._compacting = False
+        self._is_streaming = False
+        self._spinner_frame = 0
+        self._spinner_timer: object = None
         self._pending_permission_request_id: str | None = None
         self._streaming_assistant_text = ""
         self._last_stream_render_at = 0.0
@@ -307,6 +311,23 @@ class FlyinChatApp(App[None]):
             raise RuntimeError("QueryEngine not initialized")
         return self._query_engine
 
+    def _start_spinner(self) -> None:
+        self._is_streaming = True
+        self._spinner_frame = 0
+        self._spinner_timer = self.set_interval(0.12, self._tick_spinner)
+        self._render_status_bar()
+
+    def _stop_spinner(self) -> None:
+        self._is_streaming = False
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+
+    def _tick_spinner(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
+        self._render_status_bar()
+        self._scroll_chat_to_bottom()
+
     async def _handle_turn_event(self, event: TurnEvent) -> None:
         match event.event_type:
             case "turn_start":
@@ -333,10 +354,11 @@ class FlyinChatApp(App[None]):
                 self._total_output_tokens += event.data.get("output_tokens", 0)
                 self._streaming_assistant_text = ""
                 self._last_stream_render_at = 0.0
+                self._stop_spinner()
                 self._render_history()
                 self._render_status_bar()
             case "error":
-                pass
+                self._stop_spinner()
             case "permission_required":
                 self._show_permission_request(event.data)
 
@@ -349,6 +371,7 @@ class FlyinChatApp(App[None]):
             prompt, on_event=self._handle_turn_event, user_message_persisted=True
         )
         if result.status == "error" and result.error:
+            self._stop_spinner()
             conv = get_conversation(self.paths.chat_db, conversation_id=self.active_conversation_id)
             if conv is not None:
                 self._last_input_tokens = conv.last_input_tokens
@@ -509,6 +532,7 @@ class FlyinChatApp(App[None]):
             self._record_prompt_history(prompt)
             self._render_history()
         event.input.value = ""
+        self._start_spinner()
         self._submit_via_engine(prompt)
 
     def _record_prompt_history(self, prompt: str) -> None:
@@ -1353,7 +1377,7 @@ class FlyinChatApp(App[None]):
         lines.append(f"**{t(TKey.LABEL_ASSISTANT)}**\n\n{self._streaming_assistant_text}")
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-        self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
+        self._scroll_chat_to_bottom()
 
     def _render_status_bar(self) -> None:
         if self.paths is None:
@@ -1362,6 +1386,10 @@ class FlyinChatApp(App[None]):
         t = self.i18n.t
         if self._compacting:
             self.query_one("#status-bar", Static).update(t(TKey.STATUS_COMPACTING))
+            return
+        if self._is_streaming:
+            spinner = self.SPINNER_FRAMES[self._spinner_frame]
+            self.query_one("#status-bar", Static).update(f"{t(TKey.STATUS_WORKING)}... {spinner}")
             return
 
         primary = get_primary_llm_model(self.paths.config_db)

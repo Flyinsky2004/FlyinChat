@@ -127,6 +127,7 @@ ZH: dict[TKey, str] = {
     TKey.SEL_SESSION_FOOTER: "↑/↓ 选择会话，Enter 进入。",
 
     # ── Status bar ──
+    TKey.STATUS_WORKING: "正在处理",
     TKey.STATUS_COMPACTING: "⏳ 正在压缩对话历史...",
     TKey.STATUS_NO_MODEL: "未配置模型 — 请使用 /api 然后 /model",
     TKey.STATUS_THINK: "思考: {status}",

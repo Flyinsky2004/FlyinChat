@@ -128,6 +128,7 @@ class TKey(StrEnum):
     SEL_SESSION_FOOTER = "sel.session.footer"
 
     # ── Status bar ──
+    STATUS_WORKING = "status.working"
     STATUS_COMPACTING = "status.compacting"
     STATUS_NO_MODEL = "status.no_model"
     STATUS_THINK = "status.think"
