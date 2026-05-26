@@ -363,6 +363,7 @@ class FlyinChatApp(App[None]):
             self.query_one("#message-view", Markdown).update(
                 f"{prefix}**{t(TKey.LABEL_ASSISTANT)}**\n\n{t(TKey.MISC_ERROR_PREFIX, error=result.error)}"
             )
+            self._scroll_chat_to_bottom()
             self._render_status_bar()
             return
         self._render_history()
@@ -1297,6 +1298,11 @@ class FlyinChatApp(App[None]):
     def _show_panel(self, title: str, body: str) -> None:
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update(f"## {title}\n\n{body}")
+        self._scroll_chat_to_bottom()
+
+    def _scroll_chat_to_bottom(self) -> None:
+        self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
+        self.set_timer(0.08, lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
 
     def _render_history_with_hint(self, hint: str, *, fallback_title: str = "", fallback_body: str = "") -> bool:
         """Re-render conversation history with a transient hint appended. Falls back to _show_panel if no history."""
@@ -1316,7 +1322,7 @@ class FlyinChatApp(App[None]):
                 lines.append(hint)
                 self.query_one("#empty-state", Vertical).display = False
                 self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-                self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
+                self._scroll_chat_to_bottom()
                 return True
         self._show_panel(fallback_title, fallback_body)
         return False
@@ -1412,7 +1418,7 @@ class FlyinChatApp(App[None]):
                 lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
 
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-        self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
+        self._scroll_chat_to_bottom()
 
     def _mask_api_key(self, api_key: str) -> str:
         if len(api_key) <= 6:
