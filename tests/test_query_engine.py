@@ -288,6 +288,82 @@ class TestQueryEngineBasic:
 
         asyncio.run(run())
 
+    def test_multi_round_tool_call_with_reasoning(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            test_file = tmp_path / "project" / "test.txt"
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+            test_file.write_text("file content here")
+
+            conv = create_conversation(paths.chat_db, title="test")
+            engine = _make_query_engine(paths, conv.id)
+
+            call_count = 0
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                nonlocal call_count
+                call_count += 1
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                if call_count == 1:
+                    yield {"type": "reasoning", "content": "need to read the file first"}
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "file_read",
+                        "input": {"path": "test.txt"},
+                    }
+                elif call_count == 2:
+                    yield {"type": "reasoning", "content": "I see the file content, now I can answer"}
+                    yield {"type": "text", "content": "The file contains: file content here"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, events = await _collect_events(engine, "read test.txt")
+
+            assert result.status == "completed"
+            assert result.tool_rounds == 1
+            assert result.final_text == "The file contains: file content here"
+
+            messages = list_messages(paths.chat_db, conversation_id=conv.id)
+            roles_subtypes = [(m.role, m.subtype) for m in messages]
+            assert ("user", "normal") in roles_subtypes
+            assert ("assistant", "tool_call") in roles_subtypes
+            assert ("tool", "tool_result") in roles_subtypes
+            assert ("assistant", "normal") in roles_subtypes
+
+            tool_call_msg = next(
+                m for m in messages if m.role == "assistant" and m.subtype == "tool_call"
+            )
+            content = json.loads(tool_call_msg.content)
+            assert content[0]["type"] == "thinking"
+            assert content[0]["thinking"] == "need to read the file first"
+            assert content[1]["type"] == "tool_use"
+            assert content[1]["name"] == "file_read"
+
+            normal_msg = next(
+                m for m in messages if m.role == "assistant" and m.subtype == "normal"
+            )
+            normal_content = json.loads(normal_msg.content)
+            assert normal_content[0]["type"] == "thinking"
+            assert normal_content[0]["thinking"] == "I see the file content, now I can answer"
+            assert normal_content[1]["type"] == "text"
+            assert normal_content[1]["text"] == "The file contains: file content here"
+
+        asyncio.run(run())
+
     def test_max_tool_rounds_enforced(self, tmp_path: Path) -> None:
         import asyncio
 

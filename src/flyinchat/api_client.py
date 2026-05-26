@@ -110,9 +110,10 @@ async def _stream_openai_compatible(
         "messages": _convert_messages_for_openai(messages),
         "stream": True,
         "stream_options": {"include_usage": True},
-        "reasoning_effort": model.reasoning_effort,
-        "thinking": {"type": "enabled" if model.thinking_enabled else "disabled"},
     }
+    if model.thinking_enabled:
+        body["reasoning_effort"] = model.reasoning_effort
+        body["thinking"] = {"type": "enabled"}
     if tools:
         body["tools"] = tools_to_api_format(tools, "openai_compatible")
 
