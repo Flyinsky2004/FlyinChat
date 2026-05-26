@@ -667,15 +667,16 @@ class FlyinChatApp(App[None]):
         t = self.i18n.t
         risk_labels = {"low": t(TKey.RISK_LOW), "medium": t(TKey.RISK_MEDIUM), "high": t(TKey.RISK_HIGH)}
         risk_badge = risk_labels.get(risk_level, risk_level.upper())
-        panel_body = t(
+        hint = t(
             TKey.PERM_TITLE,
             tool=tool_name,
             risk=risk_badge,
             args=args_preview,
             reason=reason,
         )
-        self.query_one("#message-view", Markdown).update(panel_body)
-        self.query_one("#empty-state", Vertical).display = False
+        if not self._render_history_with_hint(hint, fallback_title=t(TKey.PERM_LABEL), fallback_body=hint):
+            self._show_panel(t(TKey.PERM_LABEL), hint)
+
         self._set_input_prompt(t(TKey.PERM_LABEL), t(TKey.PERM_PLACEHOLDER))
 
         items = (
@@ -699,6 +700,7 @@ class FlyinChatApp(App[None]):
         self.query_one("#command-menu", Static).display = False
         t = self.i18n.t
         self._set_input_prompt(t(TKey.LABEL_MESSAGE), t(TKey.PLACEHOLDER_INPUT))
+        self._render_history()
 
     def _add_api_channel(self, command: str) -> None:
         if self.paths is None:
@@ -1263,7 +1265,7 @@ class FlyinChatApp(App[None]):
             rows.append(self.selection_footer)
 
         content = "\n".join(rows)
-        if target_menu or self.selection_context == "main":
+        if target_menu or self.selection_context in ("main", "permission_request"):
             command_menu = self.query_one("#command-menu", Static)
             command_menu.update(content)
             command_menu.display = True
