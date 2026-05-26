@@ -20,16 +20,12 @@ def _dedupe_stream_delta(emitted: str, chunk: str) -> str:
     if not emitted:
         return chunk
     if chunk.startswith(emitted):
-        if len(emitted) > 1 or not emitted[-1].isascii() or not emitted[-1].isalnum():
-            return chunk[len(emitted):]
-        return chunk
+        return chunk[len(emitted):]
 
     max_overlap = min(len(emitted), len(chunk))
     for size in range(max_overlap, 0, -1):
         if emitted.endswith(chunk[:size]):
-            if size > 1 or not chunk[0].isascii() or not chunk[0].isalnum():
-                return chunk[size:]
-            return chunk
+            return chunk[size:]
     return chunk
 
 
@@ -165,52 +161,52 @@ async def _stream_openai_compatible(
 
                         delta = choices[0].get("delta", {})
 
-                    rc = delta.get("reasoning_content", "")
-                    if rc:
-                        reasoning_delta = _dedupe_stream_delta(reasoning_text, rc)
-                        reasoning_text += reasoning_delta
+                        rc = delta.get("reasoning_content", "")
+                        if rc:
+                            reasoning_delta = _dedupe_stream_delta(reasoning_text, rc)
+                            reasoning_text += reasoning_delta
 
-                    content = delta.get("content", "")
-                    if content:
-                        content_delta = _dedupe_stream_delta(text_content, content)
-                        if content_delta:
-                            if not reasoning_done and reasoning_text:
-                                reasoning_done = True
-                                yield {"type": "reasoning", "content": reasoning_text}
-                            text_content += content_delta
-                            yield {"type": "text", "content": content_delta}
+                        content = delta.get("content", "")
+                        if content:
+                            content_delta = _dedupe_stream_delta(text_content, content)
+                            if content_delta:
+                                if not reasoning_done and reasoning_text:
+                                    reasoning_done = True
+                                    yield {"type": "reasoning", "content": reasoning_text}
+                                text_content += content_delta
+                                yield {"type": "text", "content": content_delta}
 
-                    tc_list = delta.get("tool_calls", [])
-                    for tc in tc_list:
-                        idx = tc.get("index", 0)
-                        if idx not in tool_calls_by_index:
-                            tool_calls_by_index[idx] = {"name": "", "id": "", "arguments": ""}
-                        entry = tool_calls_by_index[idx]
-                        if tc.get("id"):
-                            entry["id"] = tc["id"]
-                        if tc.get("function", {}).get("name"):
-                            entry["name"] = tc["function"]["name"]
-                        if tc.get("function", {}).get("arguments"):
-                            arguments = tc["function"]["arguments"]
-                            entry["arguments"] += _dedupe_stream_delta(entry["arguments"], arguments)
+                        tc_list = delta.get("tool_calls", [])
+                        for tc in tc_list:
+                            idx = tc.get("index", 0)
+                            if idx not in tool_calls_by_index:
+                                tool_calls_by_index[idx] = {"name": "", "id": "", "arguments": ""}
+                            entry = tool_calls_by_index[idx]
+                            if tc.get("id"):
+                                entry["id"] = tc["id"]
+                            if tc.get("function", {}).get("name"):
+                                entry["name"] = tc["function"]["name"]
+                            if tc.get("function", {}).get("arguments"):
+                                arguments = tc["function"]["arguments"]
+                                entry["arguments"] += _dedupe_stream_delta(entry["arguments"], arguments)
 
-                    # try to finalize complete tool calls
-                    finished_indices = []
-                    for idx, entry in tool_calls_by_index.items():
-                        if entry["arguments"]:
-                            try:
-                                parsed = json.loads(entry["arguments"])
-                                yield {
-                                    "type": "tool_use",
-                                    "id": entry["id"],
-                                    "name": entry["name"],
-                                    "input": parsed,
-                                }
-                                finished_indices.append(idx)
-                            except json.JSONDecodeError:
-                                pass
-                    for idx in finished_indices:
-                        del tool_calls_by_index[idx]
+                        # try to finalize complete tool calls
+                        finished_indices = []
+                        for idx, entry in tool_calls_by_index.items():
+                            if entry["arguments"]:
+                                try:
+                                    parsed = json.loads(entry["arguments"])
+                                    yield {
+                                        "type": "tool_use",
+                                        "id": entry["id"],
+                                        "name": entry["name"],
+                                        "input": parsed,
+                                    }
+                                    finished_indices.append(idx)
+                                except json.JSONDecodeError:
+                                    pass
+                        for idx in finished_indices:
+                            del tool_calls_by_index[idx]
 
     # flush reasoning that wasn't yielded (no text, just tool calls)
     if reasoning_text and not reasoning_done:

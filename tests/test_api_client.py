@@ -24,7 +24,7 @@ def test_dedupe_stream_delta_handles_snapshot_chunks() -> None:
     assert "".join(output) == "你好！很高兴见到你。我是 ** Claude**，由 Anthropic 开发"
 
 
-def test_dedupe_stream_delta_keeps_normal_ascii_deltas() -> None:
+def test_dedupe_stream_delta_handles_single_char_overlap() -> None:
     emitted = ""
     output = []
 
@@ -33,7 +33,7 @@ def test_dedupe_stream_delta_keeps_normal_ascii_deltas() -> None:
         emitted += delta
         output.append(delta)
 
-    assert "".join(output) == "aand another"
+    assert "".join(output) == "and another"
 
 
 def test_convert_messages_for_openai_preserves_reasoning_for_tool_calls() -> None:
