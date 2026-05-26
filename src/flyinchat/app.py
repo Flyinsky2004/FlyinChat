@@ -129,6 +129,7 @@ class FlyinChatApp(App[None]):
             SelectionItem("/clear", t(TKey.CMD_CLEAR), t(TKey.CMD_CLEAR_DESC)),
             SelectionItem("/compact", t(TKey.CMD_COMPACT), t(TKey.CMD_COMPACT_DESC)),
             SelectionItem("/language", t(TKey.CMD_LANGUAGE), t(TKey.CMD_LANGUAGE_DESC)),
+            SelectionItem("/init", t(TKey.CMD_INIT), t(TKey.CMD_INIT_DESC)),
         )
 
     def _get_reasoning_levels(self) -> tuple[SelectionItem, ...]:
@@ -462,6 +463,10 @@ class FlyinChatApp(App[None]):
                 event.prevent_default()
                 self._resolve_pending_permission("approve")
                 return
+            if event.key == "a":
+                event.prevent_default()
+                self._resolve_pending_permission("always_approve")
+                return
             if event.key == "n" or event.key == "escape":
                 event.prevent_default()
                 self._resolve_pending_permission("deny")
@@ -671,6 +676,8 @@ class FlyinChatApp(App[None]):
                 self._run_compact()
             case "/language":
                 self._toggle_language()
+            case "/init":
+                self._run_init()
             case _:
                 self._show_panel(
                     self.i18n.t(TKey.PANEL_UNKNOWN_CMD),
@@ -688,6 +695,44 @@ class FlyinChatApp(App[None]):
             self.i18n.t(TKey.HINT_LANGUAGE_SET),
         )
         self._render_status_bar()
+
+    def _run_init(self) -> None:
+        if self.paths is None:
+            return
+
+        if get_primary_llm_model(self.paths.config_path) is None:
+            self._clear_selection()
+            self._show_panel(
+                self.i18n.t(TKey.PANEL_INIT_NO_MODEL),
+                "",
+            )
+            return
+
+        self._clear_selection()
+
+        if self.active_conversation_id is None:
+            conversation = create_conversation(self.paths.chat_path, title="/init")
+            self.active_conversation_id = conversation.id
+            self._last_usage = {}
+            self._total_output_tokens = 0
+            self._last_input_tokens = 0
+            self._query_engine = None
+            self._render_status_bar()
+
+        t = self.i18n.t
+        self._show_panel(t(TKey.PANEL_INIT), t(TKey.PANEL_INIT_BODY))
+
+        prompt = t(TKey.INIT_PROMPT)
+        add_message(
+            self.paths.chat_path,
+            conversation_id=self.active_conversation_id,
+            role="user",
+            content=prompt,
+        )
+        self._record_prompt_history(prompt)
+        self._render_history()
+        self._start_spinner()
+        self._submit_via_engine(prompt)
 
     def _show_command_menu(self, query: str) -> None:
         command_menu = self.query_one("#command-menu", Static)
@@ -813,8 +858,10 @@ class FlyinChatApp(App[None]):
         args_preview = data.get("args_preview", "")
         reason = data.get("reason", "")
         request_id = data.get("request_id", "")
+        tool_input = data.get("tool_input", {})
 
         self._pending_permission_request_id = request_id
+        self._pending_permission_tool_input = tool_input
 
         t = self.i18n.t
         risk_labels = {"low": t(TKey.RISK_LOW), "medium": t(TKey.RISK_MEDIUM), "high": t(TKey.RISK_HIGH)}
@@ -833,6 +880,7 @@ class FlyinChatApp(App[None]):
 
         items = (
             SelectionItem("approve", t(TKey.PERM_APPROVE), ""),
+            SelectionItem("always_approve", t(TKey.PERM_ALWAYS_APPROVE), ""),
             SelectionItem("deny", t(TKey.PERM_DENY), ""),
         )
         self._set_selection(
@@ -846,6 +894,20 @@ class FlyinChatApp(App[None]):
     def _resolve_pending_permission(self, resolution: str) -> None:
         engine = self._query_engine
         if engine is not None and self._pending_permission_request_id:
+            if resolution == "always_approve":
+                tool_input = getattr(self, "_pending_permission_tool_input", {})
+                cmd = tool_input.get("command", "").strip()
+                if cmd and self._tool_executor is not None:
+                    try:
+                        parts = shlex.split(cmd)
+                    except ValueError:
+                        parts = cmd.split()
+                    if parts:
+                        if len(parts) >= 2 and parts[0] == "git":
+                            pattern = f"{parts[0]} {parts[1]}"
+                        else:
+                            pattern = parts[0]
+                        self._tool_executor.add_command_to_allowlist(pattern)
             engine.resolve_permission(self._pending_permission_request_id, resolution)
         self._pending_permission_request_id = None
         self._clear_selection()

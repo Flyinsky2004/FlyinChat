@@ -23,6 +23,8 @@ class TKey(StrEnum):
     CMD_COMPACT_DESC = "cmd.compact.desc"
     CMD_LANGUAGE = "cmd.language"
     CMD_LANGUAGE_DESC = "cmd.language.desc"
+    CMD_INIT = "cmd.init"
+    CMD_INIT_DESC = "cmd.init.desc"
 
     # ── Reasoning levels ──
     REASONING_LOW = "reasoning.low"
@@ -97,6 +99,10 @@ class TKey(StrEnum):
     PANEL_EFFORT_NO_MODEL = "panel.effort_no_model"
     PANEL_CTX_WINDOW = "panel.ctx_window"
     PANEL_CTX_NO_MODEL = "panel.ctx_no_model"
+    PANEL_INIT = "panel.init"
+    PANEL_INIT_BODY = "panel.init.body"
+    PANEL_INIT_NO_MODEL = "panel.init.no_model"
+    PANEL_INIT_DONE = "panel.init.done"
 
     # ── API form ──
     FORM_DEEPSEEK_KEY = "form.deepseek.key"
@@ -159,6 +165,7 @@ class TKey(StrEnum):
     PERM_LABEL = "perm.label"
     PERM_PLACEHOLDER = "perm.placeholder"
     PERM_APPROVE = "perm.approve"
+    PERM_ALWAYS_APPROVE = "perm.always_approve"
     PERM_DENY = "perm.deny"
     PERM_ACTION_TITLE = "perm.action.title"
     PERM_ACTION_FOOTER = "perm.action.footer"
@@ -178,6 +185,9 @@ class TKey(StrEnum):
     MISC_PRIMARY_MARKER = "misc.primary_marker"
     MISC_MODEL_ROW = "misc.model_row"
     MISC_ERROR_PREFIX = "misc.error_prefix"
+
+    # ── Init prompt ──
+    INIT_PROMPT = "init.prompt"
 
     # ── Compact engine ──
     COMPACT_SUMMARY_PROMPT = "compact.summary_prompt"

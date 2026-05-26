@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -640,6 +641,7 @@ class QueryEngine:
                     "request_id": request.request_id,
                     "tool_name": tool_name,
                     "tool_call_id": tool_use_id,
+                    "tool_input": tool_input,
                     "args_preview": args_preview,
                     "risk_level": risk_level,
                     "reason": execute_result.content,
@@ -666,6 +668,52 @@ class QueryEngine:
             )
             logger.info(
                 "permission approved, executing tool",
+                extra={"request_id": request.request_id, "tool_name": tool_name},
+            )
+            exec_result = self._tool_executor.execute_approved(
+                tool_name, tool_input, self._tool_context
+            )
+            if exec_result.ok:
+                if approved_req:
+                    self._permission_store.update_status(
+                        request.request_id, RequestStatus.EXECUTED
+                    )
+                self._write_permission_transcript(
+                    turn_id, "permission_effect_applied",
+                    request_id=request.request_id, outcome="executed",
+                )
+            else:
+                if approved_req:
+                    self._permission_store.update_status(
+                        request.request_id, RequestStatus.FAILED_AFTER_APPROVAL
+                    )
+                self._write_permission_transcript(
+                    turn_id, "permission_effect_applied",
+                    request_id=request.request_id,
+                    outcome="failed",
+                    error=exec_result.content,
+                )
+            return self._persist_tool_result(turn_id, tool_name, tool_use_id, exec_result)
+
+        if resolution == "always_approve":
+            cmd = tool_input.get("command", "").strip()
+            if cmd and self._tool_executor is not None:
+                try:
+                    parts = shlex.split(cmd)
+                except ValueError:
+                    parts = cmd.split()
+                if parts:
+                    pattern = _extract_command_pattern(parts)
+                    self._tool_executor.add_command_to_allowlist(pattern)
+            approved_req = self._permission_store.update_status(
+                request.request_id, RequestStatus.APPROVED
+            )
+            self._write_permission_transcript(
+                turn_id, "permission_request_resolved",
+                request_id=request.request_id, resolution="always_approved",
+            )
+            logger.info(
+                "permission always-approved, executing tool",
                 extra={"request_id": request.request_id, "tool_name": tool_name},
             )
             exec_result = self._tool_executor.execute_approved(
@@ -818,3 +866,9 @@ def _extract_compact_summary(api_messages: list[dict]) -> str | None:
             if content:
                 parts.append(content)
     return "\n\n".join(parts) if parts else None
+
+
+def _extract_command_pattern(parts: list[str]) -> str:
+    if len(parts) >= 2 and parts[0] == "git":
+        return f"{parts[0]} {parts[1]}"
+    return parts[0]

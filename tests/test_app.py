@@ -628,3 +628,91 @@ def test_tool_permission_request_appears_during_conversation(tmp_path: Path) -> 
                 assert (tmp_path / "project" / "hello.txt").read_text() == "hello"
 
     asyncio.run(run_app())
+
+
+def test_init_appears_in_command_menu(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            await pilot.press("/")
+
+            command_menu = app.query_one("#command-menu", Static)
+
+            assert command_menu.display is True
+            assert "/init" in command_menu.content
+
+    asyncio.run(run_app())
+
+
+def test_init_shows_error_without_model(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/init"
+            await pilot.press("enter")
+
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
+
+            assert "No primary model configured" in raw or "未配置主模型" in raw
+
+    asyncio.run(run_app())
+
+
+def test_init_creates_conversation_and_submits_prompt(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+
+        async def mock_stream(channel, model, messages, usage_info, tools):
+            usage_info["completion_tokens"] = 5
+            usage_info["prompt_tokens"] = 3
+            yield {"type": "text", "content": "FLYINCHAT.md generated"}
+
+        async with app.run_test() as pilot:
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+
+                # Configure DeepSeek model first
+                prompt_input = app.query_one("#prompt-input", Input)
+                prompt_input.value = "/api add deepseek test-key"
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+                # Select it as primary
+                prompt_input.value = "/model use DeepSeek deepseek-v4-pro"
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+                # Run init
+                prompt_input.value = "/init"
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+                await pilot.pause(0.2)
+
+                convs = list_conversations(paths.chat_path)
+                assert len(convs) >= 1
+                # The init conversation should be the second one (first is /api conversation)
+                init_conv = convs[-1]
+                messages = list_messages(paths.chat_path, conversation_id=init_conv.id)
+                assert len(messages) >= 1
+                assert messages[0].role == "user"
+
+                message_view = app.query_one("#message-view", Markdown)
+                assert "FLYINCHAT.md generated" in message_view._markdown
+
+    asyncio.run(run_app())

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,18 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 logger = logging.getLogger("flyinchat.tools")
 
 PERMISSION_REQUIRED = "PERMISSION_REQUIRED"
+
+SEED_AUTO_ALLOW_PATTERNS: set[str] = {
+    "ls", "cat", "head", "tail", "wc", "grep", "rg", "find",
+    "echo", "date", "pwd", "which", "file", "stat", "sort", "uniq",
+    "du", "df", "ps", "env", "printenv", "tree",
+    "basename", "dirname", "realpath", "readlink",
+    "cut", "tr", "diff", "jq",
+    "md5sum", "sha1sum", "sha256sum",
+    "git status", "git log", "git diff", "git show", "git branch",
+    "git stash list", "git remote", "git ls-files", "git tag",
+    "git rev-parse", "git config --get",
+}
 
 
 @dataclass
@@ -87,6 +100,23 @@ class ToolRegistry:
 class ToolExecutor:
     def __init__(self, registry: ToolRegistry) -> None:
         self.registry = registry
+        self.command_auto_allowlist: set[str] = set(SEED_AUTO_ALLOW_PATTERNS)
+
+    def add_command_to_allowlist(self, pattern: str) -> None:
+        self.command_auto_allowlist.add(pattern)
+
+    def _is_command_auto_allowed(
+        self, tool_name: str, tool_input: dict[str, Any]
+    ) -> bool:
+        if tool_name != "bash":
+            return False
+        cmd = tool_input.get("command", "").strip()
+        if not cmd:
+            return False
+        for pattern in self.command_auto_allowlist:
+            if cmd == pattern or cmd.startswith(pattern + " "):
+                return True
+        return False
 
     def _emit(self, context: ToolContext, event: str, payload: Dict[str, Any]) -> None:
         if context.emit_event:
@@ -122,6 +152,12 @@ class ToolExecutor:
         gate = self._tool_allowed(tool_name, context)
         if not gate.allowed:
             if gate.ask_user:
+                if self._is_command_auto_allowed(tool_name, tool_input):
+                    logger.info(
+                        "command auto-allowed, skipping permission",
+                        extra={"tool_name": tool_name},
+                    )
+                    return self._run_tool(tool, tool_name, tool_input, context, t0)
                 result = ToolResult(
                     ok=False,
                     content=gate.reason,

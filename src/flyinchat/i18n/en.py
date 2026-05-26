@@ -22,6 +22,8 @@ EN: dict[TKey, str] = {
     TKey.CMD_COMPACT_DESC: "Compact conversation history",
     TKey.CMD_LANGUAGE: "/language",
     TKey.CMD_LANGUAGE_DESC: "Switch interface language (EN / 中文)",
+    TKey.CMD_INIT: "/init",
+    TKey.CMD_INIT_DESC: "Generate/update FLYINCHAT.md project memory file",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "Fast, minimal reasoning",
@@ -96,6 +98,10 @@ EN: dict[TKey, str] = {
     TKey.PANEL_EFFORT_NO_MODEL: "No primary model configured. Set one with /model.",
     TKey.PANEL_CTX_WINDOW: "Context window",
     TKey.PANEL_CTX_NO_MODEL: "No primary model configured. Set one with /model.",
+    TKey.PANEL_INIT: "Project Initialization",
+    TKey.PANEL_INIT_BODY: "Exploring project structure and generating FLYINCHAT.md...",
+    TKey.PANEL_INIT_NO_MODEL: "No primary model configured. Please add one with /api first, then select it with /model.",
+    TKey.PANEL_INIT_DONE: "FLYINCHAT.md has been generated in the workspace root.",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API key",
@@ -158,9 +164,10 @@ EN: dict[TKey, str] = {
     TKey.PERM_LABEL: "Permission required",
     TKey.PERM_PLACEHOLDER: "Press Enter to approve, n to deny",
     TKey.PERM_APPROVE: "Approve - allow this tool to execute",
+    TKey.PERM_ALWAYS_APPROVE: "Always Allow - auto-approve this command type",
     TKey.PERM_DENY: "Deny - block this tool call",
     TKey.PERM_ACTION_TITLE: "Action required",
-    TKey.PERM_ACTION_FOOTER: "↑/↓ select  |  Enter confirm  |  y=approve  n=deny  esc=deny",
+    TKey.PERM_ACTION_FOOTER: "↑/↓ select  |  Enter confirm  |  y=approve  a=always allow  n=deny  esc=deny",
 
     # ── Risk badges ──
     TKey.RISK_LOW: "LOW",
@@ -177,6 +184,29 @@ EN: dict[TKey, str] = {
     TKey.MISC_PRIMARY_MARKER: " [primary]",
     TKey.MISC_MODEL_ROW: "   {ci}.{mi} {name}{marker}",
     TKey.MISC_ERROR_PREFIX: "*[Error: {error}]*",
+
+    # ── Init prompt ──
+    TKey.INIT_PROMPT: (
+        "You are executing a project initialization task. Your goal is to generate or update "
+        "a FLYINCHAT.md file in the workspace root, which will serve as the project constraint "
+        "document for future AI collaboration.\n\n"
+        "Requirements:\n"
+        "1. First, explore the project by reading key files (README, package config, source "
+        "structure, test config, lint config) before writing anything. Do NOT fabricate commands "
+        "or tech stack.\n"
+        "2. The FLYINCHAT.md must cover:\n"
+        "   - Project overview and goals\n"
+        "   - Directory structure and key modules\n"
+        "   - Install/run/test commands\n"
+        "   - Code conventions and commit conventions\n"
+        "   - Common risks and prohibited actions\n"
+        "   - Recommended workflow (e.g., plan first, then change)\n"
+        "3. Mark uncertain information clearly as \"TODO:待确认\" and suggest how to verify it.\n"
+        "4. Output as clean, well-structured Markdown saved to FLYINCHAT.md in the workspace root.\n"
+        "5. Keep it concise, actionable, and maintainable.\n"
+        "6. If FLYINCHAT.md already exists, preserve valid rules and make incremental improvements "
+        "rather than rewriting everything."
+    ),
 
     # ── Compact engine ──
     TKey.COMPACT_SUMMARY_PROMPT: (

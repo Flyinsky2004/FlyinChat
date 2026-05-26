@@ -22,6 +22,8 @@ ZH: dict[TKey, str] = {
     TKey.CMD_COMPACT_DESC: "压缩对话历史",
     TKey.CMD_LANGUAGE: "/language",
     TKey.CMD_LANGUAGE_DESC: "切换界面语言（EN / 中文）",
+    TKey.CMD_INIT: "/init",
+    TKey.CMD_INIT_DESC: "生成/更新 FLYINCHAT.md 项目记忆文件",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "快速，最少推理",
@@ -96,6 +98,10 @@ ZH: dict[TKey, str] = {
     TKey.PANEL_EFFORT_NO_MODEL: "未配置主模型。请使用 /model 设置。",
     TKey.PANEL_CTX_WINDOW: "上下文窗口",
     TKey.PANEL_CTX_NO_MODEL: "未配置主模型。请使用 /model 设置。",
+    TKey.PANEL_INIT: "项目初始化",
+    TKey.PANEL_INIT_BODY: "正在探索项目结构并生成 FLYINCHAT.md...",
+    TKey.PANEL_INIT_NO_MODEL: "未配置主模型。请先使用 /api 添加模型，再使用 /model 选择。",
+    TKey.PANEL_INIT_DONE: "FLYINCHAT.md 已生成到工作区根目录。",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API 密钥",
@@ -158,9 +164,10 @@ ZH: dict[TKey, str] = {
     TKey.PERM_LABEL: "需要权限",
     TKey.PERM_PLACEHOLDER: "按 Enter 批准，n 拒绝",
     TKey.PERM_APPROVE: "批准 - 允许此工具执行",
+    TKey.PERM_ALWAYS_APPROVE: "总是允许 - 自动批准此类命令",
     TKey.PERM_DENY: "拒绝 - 阻止此工具调用",
     TKey.PERM_ACTION_TITLE: "需要操作",
-    TKey.PERM_ACTION_FOOTER: "↑/↓ 选择  |  Enter 确认  |  y=批准  n=拒绝  esc=拒绝",
+    TKey.PERM_ACTION_FOOTER: "↑/↓ 选择  |  Enter 确认  |  y=批准  a=总是允许  n=拒绝  esc=拒绝",
 
     # ── Risk badges ──
     TKey.RISK_LOW: "低",
@@ -177,6 +184,26 @@ ZH: dict[TKey, str] = {
     TKey.MISC_PRIMARY_MARKER: " [主模型]",
     TKey.MISC_MODEL_ROW: "   {ci}.{mi} {name}{marker}",
     TKey.MISC_ERROR_PREFIX: "*[错误: {error}]*",
+
+    # ── Init prompt ──
+    TKey.INIT_PROMPT: (
+        "你正在执行项目初始化任务。目标是为当前工作区生成或更新一份 FLYINCHAT.md 文件，"
+        "作为后续 AI 协作的项目约束文档。\n\n"
+        "要求：\n"
+        "1. 先通过阅读关键文件（README、包配置、源码结构、测试配置、lint 配置）探索项目再动笔，"
+        "不得凭空编造命令或技术栈。\n"
+        "2. FLYINCHAT.md 必须覆盖：\n"
+        "   - 项目简介与目标\n"
+        "   - 目录结构与关键模块\n"
+        "   - 安装/启动/测试命令\n"
+        "   - 代码规范与提交约定\n"
+        "   - 常见风险与禁止事项\n"
+        "   - 推荐工作流（如先计划后改动）\n"
+        "3. 信息不确定时，明确标注\"TODO:待确认\"，并给出建议确认方式。\n"
+        "4. 输出为可保存的 Markdown，直接写入工作区根目录的 FLYINCHAT.md。\n"
+        "5. 保持简洁、可执行、可维护。\n"
+        "6. 若 FLYINCHAT.md 已存在，请保留有效规则并做增量改进，避免无关重写。"
+    ),
 
     # ── Compact engine ──
     TKey.COMPACT_SUMMARY_PROMPT: (
