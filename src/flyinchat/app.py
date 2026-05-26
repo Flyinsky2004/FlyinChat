@@ -37,13 +37,10 @@ from .storage import (
     set_primary_llm_model,
 )
 from .tools import (
-    PERMISSION_REQUIRED,
     BashTool,
     FileReadTool,
     FileWriteTool,
     PermissionContext,
-    PermissionRequest,
-    PermissionRequestStore,
     ToolContext,
     ToolExecutor,
     ToolRegistry,
@@ -122,6 +119,9 @@ class FlyinChatApp(App[None]):
         self._query_engine: QueryEngine | None = None
         self._compacting = False
         self._pending_permission_request_id: str | None = None
+        self._streaming_assistant_text = ""
+        self._last_stream_render_at = 0.0
+        self._stream_render_interval = 0.05
         self._prompt_history: tuple[str, ...] = ()
         self._prompt_history_index: int | None = None
         self._prompt_history_draft = ""
@@ -236,7 +236,7 @@ class FlyinChatApp(App[None]):
         self._render_status_bar()
 
     def _init_tools(self) -> None:
-        workspace = Path.cwd()
+        workspace = self.paths.project_dir.parent if self.paths is not None else Path.cwd()
         permission = PermissionContext(
             allowed_tools={"file_read"},
             ask_tools={"file_write", "bash"},
@@ -278,11 +278,14 @@ class FlyinChatApp(App[None]):
     async def _handle_turn_event(self, event: TurnEvent) -> None:
         match event.event_type:
             case "turn_start":
+                self._streaming_assistant_text = ""
+                self._last_stream_render_at = 0.0
                 self.query_one("#empty-state", Vertical).display = False
             case "thinking":
                 pass
             case "text":
-                pass
+                self._streaming_assistant_text += event.data.get("content", "")
+                self._render_streaming_assistant()
             case "tool_use":
                 pass
             case "tool_result":
@@ -296,6 +299,8 @@ class FlyinChatApp(App[None]):
             case "turn_end":
                 self._last_input_tokens = event.data.get("input_tokens", 0)
                 self._total_output_tokens += event.data.get("output_tokens", 0)
+                self._streaming_assistant_text = ""
+                self._last_stream_render_at = 0.0
                 self._render_history()
                 self._render_status_bar()
             case "error":
@@ -401,6 +406,9 @@ class FlyinChatApp(App[None]):
             return
 
         if self.form_state is not None:
+            return
+
+        if self._pending_permission_request_id:
             return
 
         value = event.value.strip()
@@ -616,6 +624,7 @@ class FlyinChatApp(App[None]):
         )
         self.query_one("#message-view", Markdown).update(panel_body)
         self.query_one("#empty-state", Vertical).display = False
+        self._set_input_prompt("Permission required", "Press Enter to approve, n to deny")
 
         items = (
             SelectionItem("approve", "Approve - allow this tool to execute", ""),
@@ -1156,6 +1165,33 @@ class FlyinChatApp(App[None]):
     def _show_panel(self, title: str, body: str) -> None:
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update(f"## {title}\n\n{body}")
+
+    def _render_streaming_assistant(self) -> None:
+        if not self._streaming_assistant_text:
+            return
+        if self.paths is None or self.active_conversation_id is None:
+            return
+
+        now = time.monotonic()
+        if self._last_stream_render_at and now - self._last_stream_render_at < self._stream_render_interval:
+            return
+        self._last_stream_render_at = now
+
+        history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        lines: list[str] = []
+        for msg in history:
+            if msg.role == "tool":
+                lines.append(f"**Tool**\n\n{self._message_to_display(msg)}")
+            elif msg.role == "system":
+                lines.append(f"**System**\n\n{self._message_to_display(msg)}")
+            else:
+                role_label = "**You**" if msg.role == "user" else "**Assistant**"
+                lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
+
+        lines.append(f"**Assistant**\n\n{self._streaming_assistant_text}")
+        self.query_one("#empty-state", Vertical).display = False
+        self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
+        self.query_one("#chat-area", Container).scroll_end(animate=False)
 
     def _render_status_bar(self) -> None:
         if self.paths is None:

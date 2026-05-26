@@ -14,6 +14,25 @@ from flyinchat.tools.core import Tool
 logger = logging.getLogger("flyinchat.api_client")
 
 
+def _dedupe_stream_delta(emitted: str, chunk: str) -> str:
+    if not chunk:
+        return ""
+    if not emitted:
+        return chunk
+    if chunk.startswith(emitted):
+        if len(emitted) > 1 or not emitted[-1].isascii() or not emitted[-1].isalnum():
+            return chunk[len(emitted):]
+        return chunk
+
+    max_overlap = min(len(emitted), len(chunk))
+    for size in range(max_overlap, 0, -1):
+        if emitted.endswith(chunk[:size]):
+            if size > 1 or not chunk[0].isascii() or not chunk[0].isalnum():
+                return chunk[size:]
+            return chunk
+    return chunk
+
+
 async def stream_chat_completion(
     channel: LLMChannel,
     model: LLMModel,
@@ -104,7 +123,8 @@ async def _stream_openai_compatible(
     )
 
     tool_calls_by_index: dict[int, dict[str, Any]] = {}
-    reasoning_parts: list[str] = []
+    reasoning_text = ""
+    text_content = ""
     reasoning_done = False
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
@@ -141,14 +161,18 @@ async def _stream_openai_compatible(
 
                     rc = delta.get("reasoning_content", "")
                     if rc:
-                        reasoning_parts.append(rc)
+                        reasoning_delta = _dedupe_stream_delta(reasoning_text, rc)
+                        reasoning_text += reasoning_delta
 
                     content = delta.get("content", "")
                     if content:
-                        if not reasoning_done and reasoning_parts:
-                            reasoning_done = True
-                            yield {"type": "reasoning", "content": "".join(reasoning_parts)}
-                        yield {"type": "text", "content": content}
+                        content_delta = _dedupe_stream_delta(text_content, content)
+                        if content_delta:
+                            if not reasoning_done and reasoning_text:
+                                reasoning_done = True
+                                yield {"type": "reasoning", "content": reasoning_text}
+                            text_content += content_delta
+                            yield {"type": "text", "content": content_delta}
 
                     tc_list = delta.get("tool_calls", [])
                     for tc in tc_list:
@@ -161,7 +185,8 @@ async def _stream_openai_compatible(
                         if tc.get("function", {}).get("name"):
                             entry["name"] = tc["function"]["name"]
                         if tc.get("function", {}).get("arguments"):
-                            entry["arguments"] += tc["function"]["arguments"]
+                            arguments = tc["function"]["arguments"]
+                            entry["arguments"] += _dedupe_stream_delta(entry["arguments"], arguments)
 
                     # try to finalize complete tool calls
                     finished_indices = []
@@ -182,8 +207,8 @@ async def _stream_openai_compatible(
                         del tool_calls_by_index[idx]
 
     # flush reasoning that wasn't yielded (no text, just tool calls)
-    if reasoning_parts and not reasoning_done:
-        yield {"type": "reasoning", "content": "".join(reasoning_parts)}
+    if reasoning_text and not reasoning_done:
+        yield {"type": "reasoning", "content": reasoning_text}
 
     # flush remaining incomplete tool calls
     for entry in tool_calls_by_index.values():

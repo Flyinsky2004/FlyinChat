@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from textual.widgets import Input, Markdown, Static
 
@@ -425,5 +426,112 @@ def test_prompt_history_restores_draft_and_skips_commands(tmp_path: Path) -> Non
 
             await pilot.press("down")
             assert prompt_input.value == "draft text"
+
+    asyncio.run(run_app())
+
+
+def test_streaming_text_renders_before_turn_end(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+        first_chunk_seen = asyncio.Event()
+        release_stream = asyncio.Event()
+
+        async def mock_stream(channel, model, messages, usage_info, tools):
+            usage_info["completion_tokens"] = 2
+            usage_info["prompt_tokens"] = 1
+            yield {"type": "text", "content": "partial"}
+            first_chunk_seen.set()
+            await release_stream.wait()
+            yield {"type": "text", "content": " complete"}
+
+        async with app.run_test() as pilot:
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                prompt_input = app.query_one("#prompt-input", Input)
+                prompt_input.value = "/api add deepseek deepseek-secret"
+                await pilot.press("enter")
+                prompt_input.value = "stream please"
+                await pilot.press("enter")
+
+                await asyncio.wait_for(first_chunk_seen.wait(), timeout=1)
+                await pilot.pause()
+
+                message_view = app.query_one("#message-view", Markdown)
+                assert "partial" in message_view._markdown
+                assert "partial complete" not in message_view._markdown
+
+                release_stream.set()
+                await pilot.pause(0.2)
+
+                assert "partial complete" in message_view._markdown
+
+    asyncio.run(run_app())
+
+
+def test_tool_permission_request_appears_during_conversation(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        app = FlyinChatApp(paths=paths)
+        stream_count = 0
+
+        async def mock_stream(channel, model, messages, usage_info, tools):
+            nonlocal stream_count
+            stream_count += 1
+            usage_info["completion_tokens"] = 1
+            usage_info["prompt_tokens"] = 1
+            if stream_count == 1:
+                yield {
+                    "type": "tool_use",
+                    "id": "tu_write",
+                    "name": "file_write",
+                    "input": {"path": "hello.txt", "content": "hello"},
+                }
+                return
+            yield {"type": "text", "content": "done"}
+
+        async with app.run_test() as pilot:
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                prompt_input = app.query_one("#prompt-input", Input)
+                prompt_input.value = "/api add deepseek deepseek-secret"
+                await pilot.press("enter")
+                prompt_input.value = "write hello.txt"
+                await pilot.press("enter")
+
+                await pilot.pause()
+
+                message_view = app.query_one("#message-view", Markdown)
+                command_menu = app.query_one("#command-menu", Static)
+
+                assert app._pending_permission_request_id is not None
+                assert "Permission Required" in message_view._markdown
+                assert "file_write" in message_view._markdown
+                assert command_menu.display is True
+                assert "Approve" in command_menu.content
+
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+                assert app._pending_permission_request_id is None
+                assert (tmp_path / "project" / "hello.txt").read_text() == "hello"
 
     asyncio.run(run_app())
