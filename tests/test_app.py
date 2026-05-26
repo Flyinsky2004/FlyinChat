@@ -35,8 +35,8 @@ def test_app_renders_empty_homepage(tmp_path: Path) -> None:
             assert "███████" in empty_logo.content
             assert "FlyinChat" in app.title
             assert prompt_input.placeholder == "Ask FlyinChat anything, or type / for commands"
-            assert paths.config_db.exists()
-            assert paths.chat_db.exists()
+            assert paths.config_path.exists()
+            assert paths.chat_path.exists()
 
     asyncio.run(run_app())
 
@@ -52,8 +52,8 @@ def test_submitting_prompt_creates_project_conversation(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            conversations = list_conversations(paths.chat_db)
-            messages = list_messages(paths.chat_db, conversation_id=conversations[0].id)
+            conversations = list_conversations(paths.chat_path)
+            messages = list_messages(paths.chat_path, conversation_id=conversations[0].id)
             message_view = app.query_one("#message-view", Markdown)
             raw = message_view._markdown
 
@@ -140,8 +140,8 @@ def test_api_selection_flow_adds_deepseek(tmp_path: Path) -> None:
             prompt_input.value = "deepseek-secret"
             await pilot.press("enter")
 
-            channels = list_llm_channels(paths.config_db)
-            models = list_llm_models(paths.config_db, channel_id=channels[0].id)
+            channels = list_llm_channels(paths.config_path)
+            models = list_llm_models(paths.config_path, channel_id=channels[0].id)
             message_view = app.query_one("#message-view", Markdown)
             raw = message_view._markdown
 
@@ -163,8 +163,8 @@ def test_api_add_deepseek_creates_preset_channel(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            channels = list_llm_channels(paths.config_db)
-            models = list_llm_models(paths.config_db, channel_id=channels[0].id)
+            channels = list_llm_channels(paths.config_path)
+            models = list_llm_models(paths.config_path, channel_id=channels[0].id)
             message_view = app.query_one("#message-view", Markdown)
             raw = message_view._markdown
 
@@ -188,8 +188,8 @@ def test_api_add_openai_creates_channel_with_models(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            channels = list_llm_channels(paths.config_db)
-            models = list_llm_models(paths.config_db, channel_id=channels[0].id)
+            channels = list_llm_channels(paths.config_path)
+            models = list_llm_models(paths.config_path, channel_id=channels[0].id)
 
             assert channels[0].name == "Local"
             assert channels[0].provider_type == "openai_compatible"
@@ -258,7 +258,7 @@ def test_model_selection_uses_arrow_keys(tmp_path: Path) -> None:
             await pilot.press("down")
             await pilot.press("enter")
 
-            primary = get_primary_llm_model(paths.config_db)
+            primary = get_primary_llm_model(paths.config_path)
 
             assert primary is not None
             assert primary[1].name == "deepseek-v4-flash"
@@ -278,7 +278,7 @@ def test_model_use_selects_primary_model(tmp_path: Path) -> None:
             prompt_input.value = "/model use 1 2"
             await pilot.press("enter")
 
-            primary = get_primary_llm_model(paths.config_db)
+            primary = get_primary_llm_model(paths.config_path)
             message_view = app.query_one("#message-view", Markdown)
             raw = message_view._markdown
 
@@ -297,7 +297,7 @@ def test_sessions_command_shows_history(tmp_path: Path) -> None:
         app = FlyinChatApp(paths=paths)
 
         async with app.run_test() as pilot:
-            create_conversation(paths.chat_db, title="Existing chat")
+            create_conversation(paths.chat_path, title="Existing chat")
             prompt_input = app.query_one("#prompt-input", Input)
             prompt_input.value = "/sessions"
 
@@ -318,10 +318,10 @@ def test_selected_session_loads_prompt_history(tmp_path: Path) -> None:
         app = FlyinChatApp(paths=paths)
 
         async with app.run_test() as pilot:
-            conversation = create_conversation(paths.chat_db, title="Existing chat")
-            add_message(paths.chat_db, conversation_id=conversation.id, role="user", content="First old question")
-            add_message(paths.chat_db, conversation_id=conversation.id, role="assistant", content="Old answer")
-            add_message(paths.chat_db, conversation_id=conversation.id, role="user", content="Second old question")
+            conversation = create_conversation(paths.chat_path, title="Existing chat")
+            add_message(paths.chat_path, conversation_id=conversation.id, role="user", content="First old question")
+            add_message(paths.chat_path, conversation_id=conversation.id, role="assistant", content="Old answer")
+            add_message(paths.chat_path, conversation_id=conversation.id, role="user", content="Second old question")
             prompt_input = app.query_one("#prompt-input", Input)
             prompt_input.value = "/sessions"
             await pilot.press("enter")

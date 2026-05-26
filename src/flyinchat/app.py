@@ -263,7 +263,7 @@ class FlyinChatApp(App[None]):
     def _load_language(self) -> None:
         if self.paths is None:
             return
-        stored = get_app_setting(self.paths.config_db, "language")
+        stored = get_app_setting(self.paths.config_path, "language")
         if stored is not None:
             try:
                 self.i18n.set_language(Language(stored))
@@ -389,12 +389,12 @@ class FlyinChatApp(App[None]):
         )
         if result.status == "error" and result.error:
             self._stop_spinner()
-            conv = get_conversation(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            conv = get_conversation(self.paths.chat_path, conversation_id=self.active_conversation_id)
             if conv is not None:
                 self._last_input_tokens = conv.last_input_tokens
                 self._total_output_tokens = conv.total_output_tokens
             t = self.i18n.t
-            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
             history_display = "\n\n---\n\n".join(
                 f"**{t(TKey.LABEL_YOU) if msg.role == 'user' else t(TKey.LABEL_ASSISTANT)}**\n\n{self._message_to_display(msg)}"
                 for msg in history
@@ -413,7 +413,7 @@ class FlyinChatApp(App[None]):
         if self.paths is None or self.active_conversation_id is None:
             return
         add_message(
-            self.paths.chat_db,
+            self.paths.chat_path,
             conversation_id=self.active_conversation_id,
             role="user",
             content=prompt,
@@ -560,7 +560,7 @@ class FlyinChatApp(App[None]):
             return
 
         if self.active_conversation_id is None:
-            conversation = create_conversation(self.paths.chat_db, title=prompt[:80])
+            conversation = create_conversation(self.paths.chat_path, title=prompt[:80])
             self.active_conversation_id = conversation.id
             self._last_usage = {}
             self._total_output_tokens = 0
@@ -571,7 +571,7 @@ class FlyinChatApp(App[None]):
         self._clear_selection()
         if self.paths is not None and self.active_conversation_id is not None:
             add_message(
-                self.paths.chat_db,
+                self.paths.chat_path,
                 conversation_id=self.active_conversation_id,
                 role="user",
                 content=prompt,
@@ -591,7 +591,7 @@ class FlyinChatApp(App[None]):
         if self.paths is None or self.active_conversation_id is None:
             self._prompt_history = ()
         else:
-            messages = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            messages = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
             self._prompt_history = tuple(
                 message.content
                 for message in messages
@@ -666,7 +666,7 @@ class FlyinChatApp(App[None]):
         new_lang = Language.ZH if self.i18n.language == Language.EN else Language.EN
         self.i18n.set_language(new_lang)
         if self.paths is not None:
-            set_app_setting(self.paths.config_db, "language", new_lang.value)
+            set_app_setting(self.paths.config_path, "language", new_lang.value)
         self._clear_selection()
         self._show_panel(
             self.i18n.t(TKey.CMD_LANGUAGE),
@@ -711,7 +711,7 @@ class FlyinChatApp(App[None]):
                 self._set_effort(item.key)
             case "session_select":
                 self.active_conversation_id = item.key
-                conv = get_conversation(self.paths.chat_db, conversation_id=item.key)
+                conv = get_conversation(self.paths.chat_path, conversation_id=item.key)
                 if conv is not None:
                     self._total_output_tokens = conv.total_output_tokens
                     self._last_input_tokens = conv.last_input_tokens
@@ -788,7 +788,7 @@ class FlyinChatApp(App[None]):
                 if len(parts) != 4:
                     raise ValueError("Usage: /api add deepseek <api-key>")
                 channel, models = create_preset_channel(
-                    self.paths.config_db,
+                    self.paths.config_path,
                     preset_id="deepseek",
                     api_key=parts[3],
                 )
@@ -796,7 +796,7 @@ class FlyinChatApp(App[None]):
                 if len(parts) != 7:
                     raise ValueError("Usage: /api add openai <name> <base-url> <api-key> <model1,model2>")
                 channel, models = create_channel_with_models(
-                    self.paths.config_db,
+                    self.paths.config_path,
                     name=parts[3],
                     provider_type="openai_compatible",
                     base_url=parts[4],
@@ -807,7 +807,7 @@ class FlyinChatApp(App[None]):
                 if len(parts) != 6:
                     raise ValueError("Usage: /api add anthropic <name> <api-key> <model1,model2>")
                 channel, models = create_channel_with_models(
-                    self.paths.config_db,
+                    self.paths.config_path,
                     name=parts[3],
                     provider_type="anthropic",
                     api_key=parts[4],
@@ -828,7 +828,7 @@ class FlyinChatApp(App[None]):
             return
 
         t = self.i18n.t
-        channels = list_llm_channels(self.paths.config_db)
+        channels = list_llm_channels(self.paths.config_path)
         header = t(TKey.SEL_API_HEADER, channels=self._format_channels(channels), presets="\n".join(self._format_presets()))
         self._set_selection(
             context="api_actions",
@@ -843,17 +843,17 @@ class FlyinChatApp(App[None]):
             return
 
         t = self.i18n.t
-        channels = list_llm_channels(self.paths.config_db)
+        channels = list_llm_channels(self.paths.config_path)
         if not channels:
             self._clear_selection()
             self._show_panel(t(TKey.PANEL_PRIMARY_MODEL), t(TKey.PANEL_NO_PROVIDERS))
             return
 
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         rows = [t(TKey.SEL_MODEL_HEADER)]
         items: list[SelectionItem] = []
         for channel_index, channel in enumerate(channels, start=1):
-            models = list_llm_models(self.paths.config_db, channel_id=channel.id)
+            models = list_llm_models(self.paths.config_path, channel_id=channel.id)
             rows.append(f"{channel_index}. {channel.name} · {channel.provider_type}")
             for model_index, model in enumerate(models, start=1):
                 rows.append(self._format_model_row(channel_index, model_index, model, primary))
@@ -877,11 +877,11 @@ class FlyinChatApp(App[None]):
                 raise ValueError("Usage: /model use <channel> <model>")
             channel_index = int(parts[2]) - 1
             model_index = int(parts[3]) - 1
-            channels = list_llm_channels(self.paths.config_db)
+            channels = list_llm_channels(self.paths.config_path)
             channel = channels[channel_index]
-            models = list_llm_models(self.paths.config_db, channel_id=channel.id)
+            models = list_llm_models(self.paths.config_path, channel_id=channel.id)
             model = models[model_index]
-            selected_channel, selected_model = set_primary_llm_model(self.paths.config_db, model_id=model.id)
+            selected_channel, selected_model = set_primary_llm_model(self.paths.config_path, model_id=model.id)
         except (IndexError, ValueError):
             self._clear_selection()
             self._show_panel(self.i18n.t(TKey.PANEL_MODEL_SELECT_ERR), self.i18n.t(TKey.PANEL_MODEL_SELECT_USAGE))
@@ -894,7 +894,7 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
-        conversations = list_conversations(self.paths.chat_db)
+        conversations = list_conversations(self.paths.chat_path)
         if not conversations:
             self._clear_selection()
             self._show_panel(self.i18n.t(TKey.PANEL_SESSION_HISTORY), self.i18n.t(TKey.PANEL_NO_SESSIONS))
@@ -930,14 +930,14 @@ class FlyinChatApp(App[None]):
             self._show_panel(t(TKey.PANEL_COMPACT), t(TKey.PANEL_NO_CONVERSATION))
             return
 
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._show_panel(t(TKey.PANEL_COMPACT), t(TKey.PANEL_NO_MODEL))
             return
 
         channel, model = primary
-        all_messages = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
-        active_messages = list_active_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        all_messages = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
+        active_messages = list_active_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
         already_compacted = len(active_messages) < len(all_messages)
 
         policy = CompactionPolicy.from_model(model)
@@ -958,7 +958,7 @@ class FlyinChatApp(App[None]):
         ]
 
         engine = CompactionEngine(
-            self.paths.chat_db,
+            self.paths.chat_path,
             self.active_conversation_id,
             _i18n=self.i18n,
         )
@@ -1009,10 +1009,10 @@ class FlyinChatApp(App[None]):
 
         try:
             if self.form_state.kind == "deepseek":
-                channel, models = create_preset_channel(self.paths.config_db, preset_id="deepseek", api_key=values[0])
+                channel, models = create_preset_channel(self.paths.config_path, preset_id="deepseek", api_key=values[0])
             elif self.form_state.kind == "openai":
                 channel, models = create_channel_with_models(
-                    self.paths.config_db,
+                    self.paths.config_path,
                     name=values[0],
                     provider_type="openai_compatible",
                     base_url=values[1],
@@ -1021,7 +1021,7 @@ class FlyinChatApp(App[None]):
                 )
             elif self.form_state.kind == "anthropic":
                 channel, models = create_channel_with_models(
-                    self.paths.config_db,
+                    self.paths.config_path,
                     name=values[0],
                     provider_type="anthropic",
                     api_key=values[1],
@@ -1082,7 +1082,7 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
-        selected_channel, selected_model = set_primary_llm_model(self.paths.config_db, model_id=model_id)
+        selected_channel, selected_model = set_primary_llm_model(self.paths.config_path, model_id=model_id)
         self._clear_selection()
         self._show_primary_model_selected(selected_channel, selected_model)
 
@@ -1109,7 +1109,7 @@ class FlyinChatApp(App[None]):
             return
 
         t = self.i18n.t
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             self._show_panel(t(TKey.PANEL_THINKING_MODE), t(TKey.PANEL_THINKING_NO_MODEL))
@@ -1133,14 +1133,14 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             return
 
         model = primary[1]
         enabled = action == "on"
-        updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=enabled)
+        updated = set_model_thinking(self.paths.config_path, model_id=model.id, enabled=enabled)
         self._clear_selection()
         t = self.i18n.t
         channel = primary[0].name
@@ -1156,7 +1156,7 @@ class FlyinChatApp(App[None]):
             return
 
         t = self.i18n.t
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             self._show_panel(t(TKey.PANEL_REASONING_EFFORT), t(TKey.PANEL_REASONING_NO_MODEL))
@@ -1175,13 +1175,13 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             return
 
         model = primary[1]
-        updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
+        updated = set_model_reasoning_effort(self.paths.config_path, model_id=model.id, effort=level)
         self._clear_selection()
         t = self.i18n.t
         hint = t(TKey.HINT_REASONING_SET, effort=updated.reasoning_effort, channel=primary[0].name, model=updated.name)
@@ -1197,7 +1197,7 @@ class FlyinChatApp(App[None]):
             return
 
         t = self.i18n.t
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             self._show_panel(t(TKey.PANEL_EFFORT_LEVEL), t(TKey.PANEL_EFFORT_NO_MODEL))
@@ -1221,17 +1221,17 @@ class FlyinChatApp(App[None]):
         if self.paths is None:
             return
 
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             return
 
         model = primary[1]
         if level == "low":
-            updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=False)
+            updated = set_model_thinking(self.paths.config_path, model_id=model.id, enabled=False)
         else:
-            updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=True)
-            updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
+            updated = set_model_thinking(self.paths.config_path, model_id=model.id, enabled=True)
+            updated = set_model_reasoning_effort(self.paths.config_path, model_id=model.id, effort=level)
         self._clear_selection()
         t = self.i18n.t
         if updated.thinking_enabled:
@@ -1250,7 +1250,7 @@ class FlyinChatApp(App[None]):
             return
 
         t = self.i18n.t
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             self._clear_selection()
             self._show_panel(t(TKey.PANEL_CTX_WINDOW), t(TKey.PANEL_CTX_NO_MODEL))
@@ -1258,7 +1258,7 @@ class FlyinChatApp(App[None]):
 
         channel, model = primary
         new_size = 125_000 if model.context_window >= 1_000_000 else 1_000_000
-        updated = set_model_context_window(self.paths.config_db, model_id=model.id, context_window=new_size)
+        updated = set_model_context_window(self.paths.config_path, model_id=model.id, context_window=new_size)
         self._clear_selection()
         label = "1M" if new_size == 1_000_000 else "125K"
         hint = t(TKey.HINT_CTX_SET, label=label, channel=channel.name, model=updated.name)
@@ -1278,7 +1278,7 @@ class FlyinChatApp(App[None]):
 
         rows: list[str] = []
         for index, channel in enumerate(channels, start=1):
-            models = list_llm_models(self.paths.config_db, channel_id=channel.id)
+            models = list_llm_models(self.paths.config_path, channel_id=channel.id)
             model_names = ", ".join(model.name for model in models) or t(TKey.MISC_NO_MODELS)
             endpoint = channel.base_url or t(TKey.MISC_DEFAULT_ENDPOINT)
             rows.append(
@@ -1378,7 +1378,7 @@ class FlyinChatApp(App[None]):
     def _render_history_with_hint(self, hint: str, *, fallback_title: str = "", fallback_body: str = "") -> bool:
         """Re-render conversation history with a transient hint appended. Falls back to _show_panel if no history."""
         if self.paths is not None and self.active_conversation_id is not None:
-            history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
             if history:
                 t = self.i18n.t
                 lines: list[str] = []
@@ -1410,7 +1410,7 @@ class FlyinChatApp(App[None]):
         self._last_stream_render_at = now
 
         t = self.i18n.t
-        history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
         lines: list[str] = []
         for msg in history:
             if msg.role == "tool":
@@ -1487,7 +1487,7 @@ class FlyinChatApp(App[None]):
             _update(f"{t(TKey.STATUS_WORKING)}... {spinner}")
             return
 
-        primary = get_primary_llm_model(self.paths.config_db)
+        primary = get_primary_llm_model(self.paths.config_path)
         if primary is None:
             _update(t(TKey.STATUS_NO_MODEL))
             return
@@ -1502,7 +1502,7 @@ class FlyinChatApp(App[None]):
         parts.append(f"Ctx: {ctx_label}")
 
         if self.active_conversation_id is not None:
-            msgs = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+            msgs = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
             parts.append(t(TKey.STATUS_MSGS, count=len(msgs)))
 
             inp = self._last_input_tokens
@@ -1522,7 +1522,7 @@ class FlyinChatApp(App[None]):
         if self.paths is None or self.active_conversation_id is None:
             return
 
-        history = list_messages(self.paths.chat_db, conversation_id=self.active_conversation_id)
+        history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
         self.query_one("#empty-state", Vertical).display = False
 
         if not history:

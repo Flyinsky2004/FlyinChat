@@ -76,7 +76,7 @@ class CompactionPolicy:
 
 @dataclass
 class CompactionEngine:
-    _chat_db: Path
+    _chat_path: Path
     _conversation_id: str
     _estimator: TokenEstimator = field(default_factory=TokenEstimator)
     _i18n: I18nStore = field(default_factory=I18nStore)
@@ -190,7 +190,7 @@ class CompactionEngine:
 
             new_content = json.dumps(parsed)
             update_message_content(
-                self._chat_db,
+                self._chat_path,
                 message_id=msg.id,
                 content=new_content,
             )
@@ -203,7 +203,7 @@ class CompactionEngine:
                 applied=False, messages=tuple(messages), tokens_before=tokens_before
             )
 
-        updated = list_messages(self._chat_db, conversation_id=self._conversation_id)
+        updated = list_messages(self._chat_path, conversation_id=self._conversation_id)
         tokens_after = self._estimator.estimate_messages(updated)
         return CompactionOutput(
             applied=True,
@@ -234,7 +234,7 @@ class CompactionEngine:
         summary_text = await self._generate_summary(summarize_msgs, model, channel)
 
         summary_msg = add_message(
-            self._chat_db,
+            self._chat_path,
             conversation_id=self._conversation_id,
             role="system",
             content=json.dumps({
@@ -256,7 +256,7 @@ class CompactionEngine:
             tokens_after=0,
         )
         boundary_msg = add_message(
-            self._chat_db,
+            self._chat_path,
             conversation_id=self._conversation_id,
             role="system",
             content=json.dumps({
@@ -274,12 +274,12 @@ class CompactionEngine:
         )
 
         update_conversation_compacted_count(
-            self._chat_db,
+            self._chat_path,
             conversation_id=self._conversation_id,
             count=len(summarize_msgs),
         )
 
-        updated = list_messages(self._chat_db, conversation_id=self._conversation_id)
+        updated = list_messages(self._chat_path, conversation_id=self._conversation_id)
         tokens_after = self._estimator.estimate_messages(updated)
 
         return CompactionOutput(
@@ -306,7 +306,7 @@ class CompactionEngine:
             preserve_turns=1,
         )
         _ = self._apply_tool_result_budget(messages, api_messages, aggressive_policy, 0)
-        updated = list_messages(self._chat_db, conversation_id=self._conversation_id)
+        updated = list_messages(self._chat_path, conversation_id=self._conversation_id)
         tokens_before = self._estimator.estimate_messages(updated)
         return await self._autocompact(
             updated, api_messages, aggressive_policy, model, channel, tokens_before

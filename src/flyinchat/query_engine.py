@@ -88,13 +88,13 @@ class QueryEngine:
     ) -> TurnResult:
         t_start = time.time()
         turn_number = increment_turn(
-            self.config.paths.chat_db, conversation_id=self.config.conversation_id
+            self.config.paths.chat_path, conversation_id=self.config.conversation_id
         )
         turn_id = f"turn_{turn_number}_{self.config.conversation_id[:8]}"
 
         if not user_message_persisted:
             add_message_with_turn(
-                self.config.paths.chat_db,
+                self.config.paths.chat_path,
                 conversation_id=self.config.conversation_id,
                 turn_id=turn_id,
                 role="user",
@@ -104,7 +104,7 @@ class QueryEngine:
 
         await self._emit(on_event, TurnEvent(turn_id, "turn_start", {"turn_number": turn_number}))
 
-        primary = get_primary_llm_model(self.config.paths.config_db)
+        primary = get_primary_llm_model(self.config.paths.config_path)
         if primary is None:
             err_msg = "No model configured. Add one with /api, then /model."
             await self._emit(
@@ -156,7 +156,7 @@ class QueryEngine:
         on_event: Callable[[TurnEvent], Awaitable[None]] | None = None,
     ) -> TurnResult:
         active_messages = list_active_messages(
-            self.config.paths.chat_db, conversation_id=self.config.conversation_id
+            self.config.paths.chat_path, conversation_id=self.config.conversation_id
         )
         api_messages: list[dict] = [
             formatted
@@ -178,7 +178,7 @@ class QueryEngine:
         if self.config.enable_auto_compact:
             policy = CompactionPolicy.from_model(model)
             engine = CompactionEngine(
-                self.config.paths.chat_db, self.config.conversation_id
+                self.config.paths.chat_path, self.config.conversation_id
             )
             await self._emit(
                 on_event, TurnEvent(turn_id, "compact_start", {"strategy": "preflight"})
@@ -221,7 +221,7 @@ class QueryEngine:
             if self._cancel_event.is_set():
                 if round_num == 0:
                     add_message_with_turn(
-                        self.config.paths.chat_db,
+                        self.config.paths.chat_path,
                         conversation_id=self.config.conversation_id,
                         turn_id=turn_id,
                         role="assistant",
@@ -327,11 +327,11 @@ class QueryEngine:
                         ),
                     )
                     all_messages = list_messages(
-                        self.config.paths.chat_db,
+                        self.config.paths.chat_path,
                         conversation_id=self.config.conversation_id,
                     )
                     reactive_engine = CompactionEngine(
-                        self.config.paths.chat_db, self.config.conversation_id
+                        self.config.paths.chat_path, self.config.conversation_id
                     )
                     policy = CompactionPolicy.from_model(model)
                     reactive_result = await reactive_engine.reactive_compact(
@@ -382,7 +382,7 @@ class QueryEngine:
                     total_output_tokens += usage_info.get("completion_tokens", 0)
                     total_input_tokens = usage_info.get("prompt_tokens", 0)
                 update_conversation_usage(
-                    self.config.paths.chat_db,
+                    self.config.paths.chat_path,
                     conversation_id=self.config.conversation_id,
                     total_output_tokens=total_output_tokens,
                     last_input_tokens=total_input_tokens,
@@ -403,7 +403,7 @@ class QueryEngine:
                     else:
                         content = text_content
                     add_message_with_turn(
-                        self.config.paths.chat_db,
+                        self.config.paths.chat_path,
                         conversation_id=self.config.conversation_id,
                         turn_id=turn_id,
                         role="assistant",
@@ -412,7 +412,7 @@ class QueryEngine:
                     )
                 elif round_num == 0:
                     add_message_with_turn(
-                        self.config.paths.chat_db,
+                        self.config.paths.chat_path,
                         conversation_id=self.config.conversation_id,
                         turn_id=turn_id,
                         role="assistant",
@@ -446,7 +446,7 @@ class QueryEngine:
                     else:
                         content = text_content
                     add_message_with_turn(
-                        self.config.paths.chat_db,
+                        self.config.paths.chat_path,
                         conversation_id=self.config.conversation_id,
                         turn_id=turn_id,
                         role="assistant",
@@ -493,7 +493,7 @@ class QueryEngine:
                 })
 
             add_message_with_turn(
-                self.config.paths.chat_db,
+                self.config.paths.chat_path,
                 conversation_id=self.config.conversation_id,
                 turn_id=turn_id,
                 role="assistant",
@@ -570,7 +570,7 @@ class QueryEngine:
         if self._tool_executor is None or self._tool_context is None:
             result_text = "Tool system not initialized"
             add_message_with_turn(
-                self.config.paths.chat_db,
+                self.config.paths.chat_path,
                 conversation_id=self.config.conversation_id,
                 turn_id=turn_id,
                 role="tool",
@@ -727,7 +727,7 @@ class QueryEngine:
         self, turn_id: str, tool_name: str, tool_use_id: str, result: Any
     ) -> dict:
         add_message_with_turn(
-            self.config.paths.chat_db,
+            self.config.paths.chat_path,
             conversation_id=self.config.conversation_id,
             turn_id=turn_id,
             role="tool",
@@ -767,7 +767,7 @@ class QueryEngine:
             **kwargs,
         })
         add_message_with_turn(
-            self.config.paths.chat_db,
+            self.config.paths.chat_path,
             conversation_id=self.config.conversation_id,
             turn_id=turn_id,
             role="system",
@@ -796,7 +796,7 @@ class QueryEngine:
 
     def get_session_state(self) -> dict:
         conv = get_conversation(
-            self.config.paths.chat_db,
+            self.config.paths.chat_path,
             conversation_id=self.config.conversation_id,
         )
         if conv is None:

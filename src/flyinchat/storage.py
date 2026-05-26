@@ -1,16 +1,19 @@
 import json
+import os
 import sqlite3
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
-from .models import Conversation, LLMChannel, LLMModel, Message, TurnResult
+from .models import Conversation, LLMChannel, LLMModel, Message
 from .paths import AppPaths, resolve_app_paths
 
 _PROVIDER_TYPES = frozenset({"openai_compatible", "anthropic"})
 _MESSAGE_ROLES = frozenset({"system", "user", "assistant", "tool"})
+_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -35,160 +38,41 @@ PROVIDER_PRESETS = {
 }
 
 
-@contextmanager
-def _connect(path: Path) -> Iterator[sqlite3.Connection]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-
-
 def initialize_storage(paths: AppPaths | None = None) -> AppPaths:
     app_paths = paths if paths is not None else resolve_app_paths()
-    initialize_config_db(app_paths.config_db)
-    initialize_chat_db(app_paths.chat_db)
+    initialize_config_store(app_paths.config_path)
+    initialize_chat_store(app_paths.chat_path)
     return app_paths
 
 
-def initialize_config_db(path: Path) -> None:
-    with _connect(path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS llm_channels (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                provider_type TEXT NOT NULL CHECK (provider_type IN ('openai_compatible', 'anthropic')),
-                base_url TEXT,
-                api_key TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            )
-            """
+def initialize_config_store(path: Path) -> None:
+    if path.exists():
+        store = _load_config_store(path)
+    else:
+        sqlite_path = path.with_name("config.sqlite")
+        store = (
+            _migrate_config_store(sqlite_path)
+            if sqlite_path.exists()
+            else _default_config_store()
         )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS llm_models (
-                id TEXT PRIMARY KEY,
-                channel_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
-                thinking_enabled INTEGER NOT NULL DEFAULT 1,
-                reasoning_effort TEXT NOT NULL DEFAULT 'high',
-                context_window INTEGER NOT NULL DEFAULT 125000,
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                FOREIGN KEY (channel_id) REFERENCES llm_channels (id) ON DELETE CASCADE,
-                UNIQUE (channel_id, name)
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_models_single_default_per_channel
-            ON llm_models (channel_id)
-            WHERE is_default = 1
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-        _migrate_config_db(connection)
+    _write_json(path, store)
 
 
-def _migrate_config_db(connection: sqlite3.Connection) -> None:
-    for column, default_val in [("thinking_enabled", 1), ("reasoning_effort", "'high'"), ("context_window", 125000)]:
-        try:
-            connection.execute(
-                f"ALTER TABLE llm_models ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default_val}"
-            )
-        except sqlite3.OperationalError:
-            pass
-
-
-def initialize_chat_db(path: Path) -> None:
-    with _connect(path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS conversations (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                total_output_tokens INTEGER NOT NULL DEFAULT 0,
-                last_input_tokens INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            )
-            """
+def initialize_chat_store(path: Path) -> None:
+    if path.exists():
+        store = _load_chat_store(path)
+    else:
+        sqlite_path = path.with_name("chat.sqlite")
+        store = (
+            _migrate_chat_store(sqlite_path)
+            if sqlite_path.exists()
+            else _default_chat_store()
         )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
-            ON messages (conversation_id, created_at)
-            """
-        )
-        for column, default_val in [
-            ("total_output_tokens", 0),
-            ("last_input_tokens", 0),
-            ("compacted_message_count", 0),
-            ("current_turn", 0),
-        ]:
-            try:
-                connection.execute(
-                    f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default_val}"
-                )
-            except sqlite3.OperationalError:
-                pass
-        try:
-            connection.execute(
-                "ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
-            )
-        except sqlite3.OperationalError:
-            pass
-        for column, default_val in [
-            ("turn_id", "''"),
-            ("subtype", "'normal'"),
-        ]:
-            try:
-                connection.execute(
-                    f"ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT {default_val}"
-                )
-            except sqlite3.OperationalError:
-                pass
-        for column in ("tool_call_id", "meta"):
-            try:
-                connection.execute(
-                    f"ALTER TABLE messages ADD COLUMN {column} TEXT"
-                )
-            except sqlite3.OperationalError:
-                pass
+    _write_json(path, store)
 
 
 def create_llm_channel(
-    config_db: Path,
+    config_path: Path,
     *,
     name: str,
     provider_type: str,
@@ -196,26 +80,24 @@ def create_llm_channel(
     base_url: str | None = None,
 ) -> LLMChannel:
     _validate_channel_fields(name=name, provider_type=provider_type, api_key=api_key)
-
-    channel_id = str(uuid4())
-    with _connect(config_db) as connection:
-        connection.execute(
-            """
-            INSERT INTO llm_channels (id, name, provider_type, base_url, api_key)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (channel_id, name, provider_type, base_url, api_key),
-        )
-        row = connection.execute(
-            "SELECT * FROM llm_channels WHERE id = ?",
-            (channel_id,),
-        ).fetchone()
-
-    return _channel_from_row(row)
+    now = _now_iso()
+    channel = {
+        "id": str(uuid4()),
+        "name": name,
+        "provider_type": provider_type,
+        "base_url": base_url,
+        "api_key": api_key,
+        "created_at": now,
+        "updated_at": now,
+    }
+    store = _load_config_store(config_path)
+    next_store = {**store, "llm_channels": [*store["llm_channels"], channel]}
+    _write_json(config_path, next_store)
+    return _channel_from_dict(channel)
 
 
 def create_channel_with_models(
-    config_db: Path,
+    config_path: Path,
     *,
     name: str,
     provider_type: str,
@@ -224,50 +106,59 @@ def create_channel_with_models(
     base_url: str | None = None,
     context_window: int = 125_000,
 ) -> tuple[LLMChannel, list[LLMModel]]:
+    _validate_channel_fields(name=name, provider_type=provider_type, api_key=api_key)
     cleaned_models = _clean_model_names(model_names)
+    store = _load_config_store(config_path)
     channel_id = str(uuid4())
+    now = _now_iso()
+    channel = {
+        "id": channel_id,
+        "name": name,
+        "provider_type": provider_type,
+        "base_url": base_url,
+        "api_key": api_key,
+        "created_at": now,
+        "updated_at": now,
+    }
+    has_primary_model = _has_primary_model(store)
+    models = [
+        {
+            "id": str(uuid4()),
+            "channel_id": channel_id,
+            "name": model_name,
+            "is_default": index == 0 and not has_primary_model,
+            "thinking_enabled": True,
+            "reasoning_effort": "high",
+            "context_window": context_window,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for index, model_name in enumerate(cleaned_models)
+    ]
+    next_store = {
+        **store,
+        "llm_channels": [*store["llm_channels"], channel],
+        "llm_models": [*store["llm_models"], *models],
+    }
+    _write_json(config_path, next_store)
+    sorted_models = sorted(
+        models,
+        key=lambda item: (not item["is_default"], item["name"]),
+    )
+    return _channel_from_dict(channel), [
+        _model_from_dict(model) for model in sorted_models
+    ]
 
-    with _connect(config_db) as connection:
-        _validate_channel_fields(name=name, provider_type=provider_type, api_key=api_key)
-        connection.execute(
-            """
-            INSERT INTO llm_channels (id, name, provider_type, base_url, api_key)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (channel_id, name, provider_type, base_url, api_key),
-        )
-        has_primary_model = _has_primary_model(connection)
-        for index, model_name in enumerate(cleaned_models):
-            connection.execute(
-                """
-                INSERT INTO llm_models (id, channel_id, name, is_default, thinking_enabled, reasoning_effort, context_window)
-                VALUES (?, ?, ?, ?, 1, 'high', ?)
-                """,
-                (str(uuid4()), channel_id, model_name, int(index == 0 and not has_primary_model), context_window),
-            )
-        channel_row = connection.execute(
-            "SELECT * FROM llm_channels WHERE id = ?",
-            (channel_id,),
-        ).fetchone()
-        model_rows = connection.execute(
-            """
-            SELECT * FROM llm_models
-            WHERE channel_id = ?
-            ORDER BY is_default DESC, name ASC
-            """,
-            (channel_id,),
-        ).fetchall()
 
-    return _channel_from_row(channel_row), [_model_from_row(row) for row in model_rows]
-
-
-def create_preset_channel(config_db: Path, *, preset_id: str, api_key: str) -> tuple[LLMChannel, list[LLMModel]]:
+def create_preset_channel(
+    config_path: Path, *, preset_id: str, api_key: str
+) -> tuple[LLMChannel, list[LLMModel]]:
     preset = PROVIDER_PRESETS.get(preset_id)
     if preset is None:
         raise ValueError(f"Unsupported provider preset: {preset_id}")
 
     return create_channel_with_models(
-        config_db,
+        config_path,
         name=preset.name,
         provider_type=preset.provider_type,
         base_url=preset.base_url,
@@ -277,208 +168,179 @@ def create_preset_channel(config_db: Path, *, preset_id: str, api_key: str) -> t
     )
 
 
-def add_llm_model(config_db: Path, *, channel_id: str, name: str, is_default: bool = False, context_window: int = 125_000) -> LLMModel:
+def add_llm_model(
+    config_path: Path,
+    *,
+    channel_id: str,
+    name: str,
+    is_default: bool = False,
+    context_window: int = 125_000,
+) -> LLMModel:
     if not name.strip():
         raise ValueError("Model name is required")
 
-    model_id = str(uuid4())
-    with _connect(config_db) as connection:
-        if is_default:
-            connection.execute(
-                "UPDATE llm_models SET is_default = 0 WHERE channel_id = ?",
-                (channel_id,),
-            )
-        connection.execute(
-            """
-            INSERT INTO llm_models (id, channel_id, name, is_default, thinking_enabled, reasoning_effort, context_window)
-            VALUES (?, ?, ?, ?, 1, 'high', ?)
-            """,
-            (model_id, channel_id, name, int(is_default), context_window),
+    store = _load_config_store(config_path)
+    if not any(channel["id"] == channel_id for channel in store["llm_channels"]):
+        raise ValueError("Channel not found")
+    if any(
+        model["channel_id"] == channel_id and model["name"] == name
+        for model in store["llm_models"]
+    ):
+        raise ValueError("Model already exists for channel")
+
+    now = _now_iso()
+    model = {
+        "id": str(uuid4()),
+        "channel_id": channel_id,
+        "name": name,
+        "is_default": is_default,
+        "thinking_enabled": True,
+        "reasoning_effort": "high",
+        "context_window": context_window,
+        "created_at": now,
+        "updated_at": now,
+    }
+    existing_models = [
+        {**existing, "is_default": False}
+        if is_default and existing["channel_id"] == channel_id
+        else existing
+        for existing in store["llm_models"]
+    ]
+    next_store = {**store, "llm_models": [*existing_models, model]}
+    _write_json(config_path, next_store)
+    return _model_from_dict(model)
+
+
+def list_llm_channels(config_path: Path) -> list[LLMChannel]:
+    store = _load_config_store(config_path)
+    rows = sorted(
+        store["llm_channels"],
+        key=lambda item: (item["name"], item["created_at"]),
+    )
+    return [_channel_from_dict(row) for row in rows]
+
+
+def list_llm_models(config_path: Path, *, channel_id: str | None = None) -> list[LLMModel]:
+    store = _load_config_store(config_path)
+    rows = store["llm_models"]
+    if channel_id is not None:
+        rows = [row for row in rows if row["channel_id"] == channel_id]
+        rows = sorted(rows, key=lambda item: (not item["is_default"], item["name"]))
+    else:
+        rows = sorted(
+            rows,
+            key=lambda item: (
+                item["channel_id"],
+                not item["is_default"],
+                item["name"],
+            ),
         )
-        row = connection.execute(
-            "SELECT * FROM llm_models WHERE id = ?",
-            (model_id,),
-        ).fetchone()
-
-    return _model_from_row(row)
+    return [_model_from_dict(row) for row in rows]
 
 
-def list_llm_channels(config_db: Path) -> list[LLMChannel]:
-    with _connect(config_db) as connection:
-        rows = connection.execute(
-            "SELECT * FROM llm_channels ORDER BY name ASC, created_at ASC",
-        ).fetchall()
-
-    return [_channel_from_row(row) for row in rows]
-
-
-def list_llm_models(config_db: Path, *, channel_id: str | None = None) -> list[LLMModel]:
-    with _connect(config_db) as connection:
-        if channel_id is None:
-            rows = connection.execute(
-                "SELECT * FROM llm_models ORDER BY channel_id ASC, is_default DESC, name ASC",
-            ).fetchall()
-        else:
-            rows = connection.execute(
-                """
-                SELECT * FROM llm_models
-                WHERE channel_id = ?
-                ORDER BY is_default DESC, name ASC
-                """,
-                (channel_id,),
-            ).fetchall()
-
-    return [_model_from_row(row) for row in rows]
-
-
-def get_primary_llm_model(config_db: Path) -> tuple[LLMChannel, LLMModel] | None:
-    with _connect(config_db) as connection:
-        row = connection.execute(
-            """
-            SELECT
-                c.id AS channel_id,
-                c.name AS channel_name,
-                c.provider_type,
-                c.base_url,
-                c.api_key,
-                c.created_at AS channel_created_at,
-                c.updated_at AS channel_updated_at,
-                m.id AS model_id,
-                m.name AS model_name,
-                m.is_default,
-                m.thinking_enabled,
-                m.reasoning_effort,
-                m.context_window,
-                m.created_at AS model_created_at,
-                m.updated_at AS model_updated_at
-            FROM llm_models m
-            JOIN llm_channels c ON c.id = m.channel_id
-            WHERE m.is_default = 1
-            ORDER BY c.name ASC, m.name ASC
-            LIMIT 1
-            """
-        ).fetchone()
-
-    if row is None:
+def get_primary_llm_model(config_path: Path) -> tuple[LLMChannel, LLMModel] | None:
+    store = _load_config_store(config_path)
+    default_models = [model for model in store["llm_models"] if model["is_default"]]
+    if not default_models:
         return None
-
-    return _channel_model_from_joined_row(row)
-
-
-def set_primary_llm_model(config_db: Path, *, model_id: str) -> tuple[LLMChannel, LLMModel]:
-    with _connect(config_db) as connection:
-        row = connection.execute(
-            "SELECT * FROM llm_models WHERE id = ?",
-            (model_id,),
-        ).fetchone()
-        if row is None:
-            raise ValueError("Model not found")
-
-        connection.execute("UPDATE llm_models SET is_default = 0")
-        connection.execute(
-            "UPDATE llm_models SET is_default = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-            (model_id,),
-        )
-        joined_row = connection.execute(
-            """
-            SELECT
-                c.id AS channel_id,
-                c.name AS channel_name,
-                c.provider_type,
-                c.base_url,
-                c.api_key,
-                c.created_at AS channel_created_at,
-                c.updated_at AS channel_updated_at,
-                m.id AS model_id,
-                m.name AS model_name,
-                m.is_default,
-                m.thinking_enabled,
-                m.reasoning_effort,
-                m.context_window,
-                m.created_at AS model_created_at,
-                m.updated_at AS model_updated_at
-            FROM llm_models m
-            JOIN llm_channels c ON c.id = m.channel_id
-            WHERE m.id = ?
-            """,
-            (model_id,),
-        ).fetchone()
-
-    return _channel_model_from_joined_row(joined_row)
+    channel_by_id = {channel["id"]: channel for channel in store["llm_channels"]}
+    joined = [
+        (channel_by_id[model["channel_id"]], model)
+        for model in default_models
+        if model["channel_id"] in channel_by_id
+    ]
+    if not joined:
+        return None
+    channel, model = sorted(
+        joined,
+        key=lambda pair: (pair[0]["name"], pair[1]["name"]),
+    )[0]
+    return _channel_from_dict(channel), _model_from_dict(model)
 
 
-def set_model_thinking(config_db: Path, *, model_id: str, enabled: bool) -> LLMModel:
-    with _connect(config_db) as connection:
-        connection.execute(
-            "UPDATE llm_models SET thinking_enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-            (int(enabled), model_id),
-        )
-        row = connection.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,)).fetchone()
-    return _model_from_row(row)
+def set_primary_llm_model(config_path: Path, *, model_id: str) -> tuple[LLMChannel, LLMModel]:
+    store = _load_config_store(config_path)
+    target = next((model for model in store["llm_models"] if model["id"] == model_id), None)
+    if target is None:
+        raise ValueError("Model not found")
+
+    now = _now_iso()
+    next_models = [
+        {
+            **model,
+            "is_default": model["id"] == model_id,
+            "updated_at": now if model["id"] == model_id else model["updated_at"],
+        }
+        for model in store["llm_models"]
+    ]
+    next_store = {**store, "llm_models": next_models}
+    _write_json(config_path, next_store)
+    updated_model = next(model for model in next_models if model["id"] == model_id)
+    channel = _require_channel(next_store, updated_model["channel_id"])
+    return _channel_from_dict(channel), _model_from_dict(updated_model)
 
 
-def set_model_reasoning_effort(config_db: Path, *, model_id: str, effort: str) -> LLMModel:
+def set_model_thinking(config_path: Path, *, model_id: str, enabled: bool) -> LLMModel:
+    return _update_model(config_path, model_id, {"thinking_enabled": enabled})
+
+
+def set_model_reasoning_effort(config_path: Path, *, model_id: str, effort: str) -> LLMModel:
     if effort not in ("low", "medium", "high"):
         raise ValueError(f"Invalid reasoning effort: {effort}. Must be low, medium, or high.")
-    with _connect(config_db) as connection:
-        connection.execute(
-            "UPDATE llm_models SET reasoning_effort = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-            (effort, model_id),
-        )
-        row = connection.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,)).fetchone()
-    return _model_from_row(row)
+    return _update_model(config_path, model_id, {"reasoning_effort": effort})
 
 
-def set_model_context_window(config_db: Path, *, model_id: str, context_window: int) -> LLMModel:
-    with _connect(config_db) as connection:
-        connection.execute(
-            "UPDATE llm_models SET context_window = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-            (context_window, model_id),
-        )
-        row = connection.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,)).fetchone()
-    return _model_from_row(row)
+def set_model_context_window(config_path: Path, *, model_id: str, context_window: int) -> LLMModel:
+    return _update_model(config_path, model_id, {"context_window": context_window})
 
 
-def create_conversation(chat_db: Path, *, title: str) -> Conversation:
+def create_conversation(chat_path: Path, *, title: str) -> Conversation:
     if not title.strip():
         raise ValueError("Conversation title is required")
 
-    conversation_id = str(uuid4())
-    with _connect(chat_db) as connection:
-        connection.execute(
-            "INSERT INTO conversations (id, title) VALUES (?, ?)",
-            (conversation_id, title),
-        )
-        row = connection.execute(
-            "SELECT * FROM conversations WHERE id = ?",
-            (conversation_id,),
-        ).fetchone()
-
-    return _conversation_from_row(row)
-
-
-def get_conversation(chat_db: Path, *, conversation_id: str) -> Conversation | None:
-    with _connect(chat_db) as connection:
-        row = connection.execute(
-            "SELECT * FROM conversations WHERE id = ?",
-            (conversation_id,),
-        ).fetchone()
-    if row is None:
-        return None
-    return _conversation_from_row(row)
+    now = _now_iso()
+    conversation = {
+        "id": str(uuid4()),
+        "title": title,
+        "total_output_tokens": 0,
+        "last_input_tokens": 0,
+        "compacted_message_count": 0,
+        "current_turn": 0,
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+    store = _load_chat_store(chat_path)
+    next_store = {**store, "conversations": [*store["conversations"], conversation]}
+    _write_json(chat_path, next_store)
+    return _conversation_from_dict(conversation)
 
 
-def list_conversations(chat_db: Path) -> list[Conversation]:
-    with _connect(chat_db) as connection:
-        rows = connection.execute(
-            "SELECT * FROM conversations ORDER BY updated_at DESC, created_at DESC",
-        ).fetchall()
+def get_conversation(chat_path: Path, *, conversation_id: str) -> Conversation | None:
+    store = _load_chat_store(chat_path)
+    row = next(
+        (
+            conversation
+            for conversation in store["conversations"]
+            if conversation["id"] == conversation_id
+        ),
+        None,
+    )
+    return _conversation_from_dict(row) if row is not None else None
 
-    return [_conversation_from_row(row) for row in rows]
+
+def list_conversations(chat_path: Path) -> list[Conversation]:
+    store = _load_chat_store(chat_path)
+    rows = sorted(
+        store["conversations"],
+        key=lambda item: (item["updated_at"], item["created_at"]),
+        reverse=True,
+    )
+    return [_conversation_from_dict(row) for row in rows]
 
 
 def add_message(
-    chat_db: Path,
+    chat_path: Path,
     *,
     conversation_id: str,
     role: str,
@@ -493,70 +355,78 @@ def add_message(
     if not content:
         raise ValueError("Message content is required")
 
-    message_id = str(uuid4())
-    with _connect(chat_db) as connection:
-        connection.execute(
-            """
-            INSERT INTO messages (id, conversation_id, role, content, turn_id, subtype, tool_call_id, meta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, conversation_id, role, content, turn_id, subtype, tool_call_id, meta),
-        )
-        connection.execute(
-            """
-            UPDATE conversations
-            SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE id = ?
-            """,
-            (conversation_id,),
-        )
-        row = connection.execute(
-            "SELECT * FROM messages WHERE id = ?",
-            (message_id,),
-        ).fetchone()
+    store = _load_chat_store(chat_path)
+    if not any(conversation["id"] == conversation_id for conversation in store["conversations"]):
+        raise ValueError("Conversation not found")
 
-    return _message_from_row(row)
+    now = _now_iso()
+    message = {
+        "id": str(uuid4()),
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "created_at": now,
+        "turn_id": turn_id,
+        "subtype": subtype,
+        "tool_call_id": tool_call_id,
+        "meta": meta,
+    }
+    conversations = [
+        {**conversation, "updated_at": now}
+        if conversation["id"] == conversation_id
+        else conversation
+        for conversation in store["conversations"]
+    ]
+    next_store = {
+        **store,
+        "conversations": conversations,
+        "messages": [*store["messages"], message],
+    }
+    _write_json(chat_path, next_store)
+    return _message_from_dict(message)
 
 
 def update_conversation_usage(
-    chat_db: Path, *, conversation_id: str, total_output_tokens: int, last_input_tokens: int
+    chat_path: Path, *, conversation_id: str, total_output_tokens: int, last_input_tokens: int
 ) -> None:
-    with _connect(chat_db) as connection:
-        connection.execute(
-            """
-            UPDATE conversations
-            SET total_output_tokens = ?, last_input_tokens = ?,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE id = ?
-            """,
-            (total_output_tokens, last_input_tokens, conversation_id),
-        )
+    store = _load_chat_store(chat_path)
+    now = _now_iso()
+    conversations = [
+        {
+            **conversation,
+            "total_output_tokens": total_output_tokens,
+            "last_input_tokens": last_input_tokens,
+            "updated_at": now,
+        }
+        if conversation["id"] == conversation_id
+        else conversation
+        for conversation in store["conversations"]
+    ]
+    _write_json(chat_path, {**store, "conversations": conversations})
 
 
-def list_messages(chat_db: Path, *, conversation_id: str) -> list[Message]:
-    with _connect(chat_db) as connection:
-        rows = connection.execute(
-            """
-            SELECT * FROM messages
-            WHERE conversation_id = ?
-            ORDER BY created_at ASC
-            """,
-            (conversation_id,),
-        ).fetchall()
-
-    return [_message_from_row(row) for row in rows]
+def list_messages(chat_path: Path, *, conversation_id: str) -> list[Message]:
+    store = _load_chat_store(chat_path)
+    rows = [
+        message
+        for message in store["messages"]
+        if message["conversation_id"] == conversation_id
+    ]
+    rows = sorted(rows, key=lambda item: item["created_at"])
+    return [_message_from_dict(row) for row in rows]
 
 
-def update_message_content(chat_db: Path, *, message_id: str, content: str) -> None:
-    with _connect(chat_db) as connection:
-        connection.execute(
-            "UPDATE messages SET content = ? WHERE id = ?",
-            (content, message_id),
-        )
+def update_message_content(chat_path: Path, *, message_id: str, content: str) -> None:
+    store = _load_chat_store(chat_path)
+    messages = [
+        {**message, "content": content} if message["id"] == message_id else message
+        for message in store["messages"]
+    ]
+    _write_json(chat_path, {**store, "messages": messages})
 
 
 def add_message_with_turn(
-    chat_db: Path,
+    chat_path: Path,
     *,
     conversation_id: str,
     turn_id: str,
@@ -567,7 +437,7 @@ def add_message_with_turn(
     meta: str = "{}",
 ) -> Message:
     return add_message(
-        chat_db,
+        chat_path,
         conversation_id=conversation_id,
         role=role,
         content=content,
@@ -579,65 +449,58 @@ def add_message_with_turn(
 
 
 def get_turn_messages(
-    chat_db: Path, *, conversation_id: str, turn_id: str
+    chat_path: Path, *, conversation_id: str, turn_id: str
 ) -> list[Message]:
-    with _connect(chat_db) as connection:
-        rows = connection.execute(
-            """
-            SELECT * FROM messages
-            WHERE conversation_id = ? AND turn_id = ?
-            ORDER BY created_at ASC
-            """,
-            (conversation_id, turn_id),
-        ).fetchall()
-    return [_message_from_row(row) for row in rows]
+    store = _load_chat_store(chat_path)
+    rows = [
+        message
+        for message in store["messages"]
+        if message["conversation_id"] == conversation_id and message["turn_id"] == turn_id
+    ]
+    rows = sorted(rows, key=lambda item: item["created_at"])
+    return [_message_from_dict(row) for row in rows]
 
 
-def increment_turn(chat_db: Path, *, conversation_id: str) -> int:
-    with _connect(chat_db) as connection:
-        connection.execute(
-            """
-            UPDATE conversations
-            SET current_turn = current_turn + 1,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE id = ?
-            """,
-            (conversation_id,),
-        )
-        row = connection.execute(
-            "SELECT current_turn FROM conversations WHERE id = ?",
-            (conversation_id,),
-        ).fetchone()
-    return row["current_turn"] if row else 0
+def increment_turn(chat_path: Path, *, conversation_id: str) -> int:
+    store = _load_chat_store(chat_path)
+    now = _now_iso()
+    current_turn = 0
+    conversations = []
+    for conversation in store["conversations"]:
+        if conversation["id"] == conversation_id:
+            current_turn = int(conversation["current_turn"]) + 1
+            conversations.append({**conversation, "current_turn": current_turn, "updated_at": now})
+        else:
+            conversations.append(conversation)
+    _write_json(chat_path, {**store, "conversations": conversations})
+    return current_turn
 
 
 def update_conversation_compacted_count(
-    chat_db: Path, *, conversation_id: str, count: int
+    chat_path: Path, *, conversation_id: str, count: int
 ) -> None:
-    with _connect(chat_db) as connection:
-        connection.execute(
-            """
-            UPDATE conversations
-            SET compacted_message_count = ?,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            WHERE id = ?
-            """,
-            (count, conversation_id),
-        )
+    store = _load_chat_store(chat_path)
+    now = _now_iso()
+    conversations = [
+        {**conversation, "compacted_message_count": count, "updated_at": now}
+        if conversation["id"] == conversation_id
+        else conversation
+        for conversation in store["conversations"]
+    ]
+    _write_json(chat_path, {**store, "conversations": conversations})
 
 
-def list_active_messages(chat_db: Path, *, conversation_id: str) -> list[Message]:
-    """Load messages for API use, skipping pre-compact messages."""
-    all_msgs = list_messages(chat_db, conversation_id=conversation_id)
+def list_active_messages(chat_path: Path, *, conversation_id: str) -> list[Message]:
+    all_msgs = list_messages(chat_path, conversation_id=conversation_id)
     boundary_idx: int | None = None
-    for i, msg in enumerate(all_msgs):
+    for index, msg in enumerate(all_msgs):
         if msg.subtype == "compact_boundary":
-            boundary_idx = i
+            boundary_idx = index
             break
         try:
             parsed = json.loads(msg.content)
             if isinstance(parsed, dict) and parsed.get("type") == "compact_boundary":
-                boundary_idx = i
+                boundary_idx = index
                 break
         except (json.JSONDecodeError, TypeError):
             pass
@@ -661,6 +524,136 @@ def list_active_messages(chat_db: Path, *, conversation_id: str) -> list[Message
     return all_msgs[start:]
 
 
+def get_app_setting(path: Path, key: str) -> str | None:
+    store = _load_config_store(path)
+    value = store["app_settings"].get(key)
+    return str(value) if value is not None else None
+
+
+def set_app_setting(path: Path, key: str, value: str) -> None:
+    store = _load_config_store(path)
+    settings = {**store["app_settings"], key: value}
+    _write_json(path, {**store, "app_settings": settings})
+
+
+def _load_config_store(path: Path) -> dict[str, Any]:
+    store = _load_json(path, _default_config_store)
+    return {
+        "schema_version": int(store.get("schema_version", _SCHEMA_VERSION)),
+        "llm_channels": [_normalize_channel_dict(row) for row in store.get("llm_channels", [])],
+        "llm_models": [_normalize_model_dict(row) for row in store.get("llm_models", [])],
+        "app_settings": dict(store.get("app_settings", {})),
+    }
+
+
+def _load_chat_store(path: Path) -> dict[str, Any]:
+    store = _load_json(path, _default_chat_store)
+    return {
+        "schema_version": int(store.get("schema_version", _SCHEMA_VERSION)),
+        "conversations": [
+            _normalize_conversation_dict(row)
+            for row in store.get("conversations", [])
+        ],
+        "messages": [_normalize_message_dict(row) for row in store.get("messages", [])],
+    }
+
+
+def _load_json(path: Path, default_factory) -> dict[str, Any]:
+    if not path.exists():
+        return default_factory()
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        return default_factory()
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid storage file: {path}")
+    return data
+
+
+def _write_json(path: Path, store: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temp_path.write_text(
+        json.dumps(store, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temp_path, path)
+
+
+def _default_config_store() -> dict[str, Any]:
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "llm_channels": [],
+        "llm_models": [],
+        "app_settings": {},
+    }
+
+
+def _default_chat_store() -> dict[str, Any]:
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "conversations": [],
+        "messages": [],
+    }
+
+
+def _migrate_config_store(sqlite_path: Path) -> dict[str, Any]:
+    with _connect_sqlite(sqlite_path) as connection:
+        channels = [
+            _normalize_channel_dict(row)
+            for row in _fetch_sqlite_rows(connection, "llm_channels")
+        ]
+        models = [
+            _normalize_model_dict(row)
+            for row in _fetch_sqlite_rows(connection, "llm_models")
+        ]
+        settings = {
+            str(row.get("key", "")): str(row.get("value", ""))
+            for row in _fetch_sqlite_rows(connection, "app_settings")
+            if row.get("key") is not None
+        }
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "llm_channels": channels,
+        "llm_models": models,
+        "app_settings": settings,
+    }
+
+
+def _migrate_chat_store(sqlite_path: Path) -> dict[str, Any]:
+    with _connect_sqlite(sqlite_path) as connection:
+        conversations = [
+            _normalize_conversation_dict(row)
+            for row in _fetch_sqlite_rows(connection, "conversations")
+        ]
+        messages = [
+            _normalize_message_dict(row)
+            for row in _fetch_sqlite_rows(connection, "messages")
+        ]
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "conversations": conversations,
+        "messages": messages,
+    }
+
+
+def _connect_sqlite(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _fetch_sqlite_rows(connection: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if exists is None:
+        return []
+    rows = connection.execute(f"SELECT * FROM {table}").fetchall()
+    return [dict(row) for row in rows]
+
+
 def _validate_channel_fields(*, name: str, provider_type: str, api_key: str) -> None:
     if provider_type not in _PROVIDER_TYPES:
         raise ValueError(f"Unsupported provider_type: {provider_type}")
@@ -671,20 +664,112 @@ def _validate_channel_fields(*, name: str, provider_type: str, api_key: str) -> 
 
 
 def _clean_model_names(model_names: Sequence[str]) -> tuple[str, ...]:
-    cleaned = tuple(dict.fromkeys(model_name.strip() for model_name in model_names if model_name.strip()))
+    cleaned = tuple(
+        dict.fromkeys(
+            model_name.strip() for model_name in model_names if model_name.strip()
+        )
+    )
     if not cleaned:
         raise ValueError("At least one model is required")
     return cleaned
 
 
-def _has_primary_model(connection: sqlite3.Connection) -> bool:
-    row = connection.execute(
-        "SELECT 1 FROM llm_models WHERE is_default = 1 LIMIT 1",
-    ).fetchone()
-    return row is not None
+def _has_primary_model(store: dict[str, Any]) -> bool:
+    return any(model["is_default"] for model in store["llm_models"])
 
 
-def _channel_from_row(row: sqlite3.Row) -> LLMChannel:
+def _update_model(config_path: Path, model_id: str, updates: dict[str, Any]) -> LLMModel:
+    store = _load_config_store(config_path)
+    now = _now_iso()
+    found = False
+    models = []
+    for model in store["llm_models"]:
+        if model["id"] == model_id:
+            found = True
+            models.append({**model, **updates, "updated_at": now})
+        else:
+            models.append(model)
+    if not found:
+        raise ValueError("Model not found")
+    _write_json(config_path, {**store, "llm_models": models})
+    return _model_from_dict(
+        next(model for model in models if model["id"] == model_id)
+    )
+
+
+def _require_channel(store: dict[str, Any], channel_id: str) -> dict[str, Any]:
+    channel = next(
+        (item for item in store["llm_channels"] if item["id"] == channel_id),
+        None,
+    )
+    if channel is None:
+        raise ValueError("Channel not found")
+    return channel
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _normalize_channel_dict(row: dict[str, Any]) -> dict[str, Any]:
+    now = _now_iso()
+    return {
+        "id": str(row["id"]),
+        "name": str(row["name"]),
+        "provider_type": str(row["provider_type"]),
+        "base_url": row.get("base_url"),
+        "api_key": str(row["api_key"]),
+        "created_at": str(row.get("created_at") or now),
+        "updated_at": str(row.get("updated_at") or now),
+    }
+
+
+def _normalize_model_dict(row: dict[str, Any]) -> dict[str, Any]:
+    now = _now_iso()
+    return {
+        "id": str(row["id"]),
+        "channel_id": str(row["channel_id"]),
+        "name": str(row["name"]),
+        "is_default": bool(row.get("is_default", False)),
+        "thinking_enabled": bool(row.get("thinking_enabled", True)),
+        "reasoning_effort": str(row.get("reasoning_effort") or "high"),
+        "context_window": int(row.get("context_window") or 125_000),
+        "created_at": str(row.get("created_at") or now),
+        "updated_at": str(row.get("updated_at") or now),
+    }
+
+
+def _normalize_conversation_dict(row: dict[str, Any]) -> dict[str, Any]:
+    now = _now_iso()
+    return {
+        "id": str(row["id"]),
+        "title": str(row["title"]),
+        "total_output_tokens": int(row.get("total_output_tokens") or 0),
+        "last_input_tokens": int(row.get("last_input_tokens") or 0),
+        "compacted_message_count": int(row.get("compacted_message_count") or 0),
+        "current_turn": int(row.get("current_turn") or 0),
+        "status": str(row.get("status") or "active"),
+        "created_at": str(row.get("created_at") or now),
+        "updated_at": str(row.get("updated_at") or now),
+    }
+
+
+def _normalize_message_dict(row: dict[str, Any]) -> dict[str, Any]:
+    now = _now_iso()
+    return {
+        "id": str(row["id"]),
+        "conversation_id": str(row["conversation_id"]),
+        "role": str(row["role"]),
+        "content": str(row["content"]),
+        "created_at": str(row.get("created_at") or now),
+        "turn_id": str(row.get("turn_id") or ""),
+        "subtype": str(row.get("subtype") or "normal"),
+        "tool_call_id": row.get("tool_call_id"),
+        "meta": str(row.get("meta") or "{}"),
+    }
+
+
+def _channel_from_dict(row: dict[str, Any]) -> LLMChannel:
     return LLMChannel(
         id=row["id"],
         name=row["name"],
@@ -696,7 +781,7 @@ def _channel_from_row(row: sqlite3.Row) -> LLMChannel:
     )
 
 
-def _model_from_row(row: sqlite3.Row) -> LLMModel:
+def _model_from_dict(row: dict[str, Any]) -> LLMModel:
     return LLMModel(
         id=row["id"],
         channel_id=row["channel_id"],
@@ -704,52 +789,27 @@ def _model_from_row(row: sqlite3.Row) -> LLMModel:
         is_default=bool(row["is_default"]),
         thinking_enabled=bool(row["thinking_enabled"]),
         reasoning_effort=row["reasoning_effort"],
-        context_window=row["context_window"],
+        context_window=int(row["context_window"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
-def _channel_model_from_joined_row(row: sqlite3.Row) -> tuple[LLMChannel, LLMModel]:
-    return (
-        LLMChannel(
-            id=row["channel_id"],
-            name=row["channel_name"],
-            provider_type=row["provider_type"],
-            base_url=row["base_url"],
-            api_key=row["api_key"],
-            created_at=row["channel_created_at"],
-            updated_at=row["channel_updated_at"],
-        ),
-        LLMModel(
-            id=row["model_id"],
-            channel_id=row["channel_id"],
-            name=row["model_name"],
-            is_default=bool(row["is_default"]),
-            thinking_enabled=bool(row["thinking_enabled"]),
-            reasoning_effort=row["reasoning_effort"],
-            context_window=row["context_window"],
-            created_at=row["model_created_at"],
-            updated_at=row["model_updated_at"],
-        ),
-    )
-
-
-def _conversation_from_row(row: sqlite3.Row) -> Conversation:
+def _conversation_from_dict(row: dict[str, Any]) -> Conversation:
     return Conversation(
         id=row["id"],
         title=row["title"],
-        total_output_tokens=row["total_output_tokens"],
-        last_input_tokens=row["last_input_tokens"],
-        compacted_message_count=row["compacted_message_count"],
-        current_turn=row["current_turn"],
+        total_output_tokens=int(row["total_output_tokens"]),
+        last_input_tokens=int(row["last_input_tokens"]),
+        compacted_message_count=int(row["compacted_message_count"]),
+        current_turn=int(row["current_turn"]),
         status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
-def _message_from_row(row: sqlite3.Row) -> Message:
+def _message_from_dict(row: dict[str, Any]) -> Message:
     return Message(
         id=row["id"],
         conversation_id=row["conversation_id"],
@@ -761,20 +821,3 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         tool_call_id=row["tool_call_id"],
         meta=row["meta"],
     )
-
-
-def get_app_setting(path: Path, key: str) -> str | None:
-    with _connect(path) as connection:
-        row = connection.execute(
-            "SELECT value FROM app_settings WHERE key = ?", (key,)
-        ).fetchone()
-    return row["value"] if row else None
-
-
-def set_app_setting(path: Path, key: str, value: str) -> None:
-    with _connect(path) as connection:
-        connection.execute(
-            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )

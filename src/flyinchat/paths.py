@@ -6,8 +6,8 @@ from pathlib import Path
 class AppPaths:
     global_dir: Path
     project_dir: Path
-    config_db: Path
-    chat_db: Path
+    config_path: Path
+    chat_path: Path
 
 
 def resolve_app_paths(home: Path | None = None, cwd: Path | None = None) -> AppPaths:
@@ -19,6 +19,6 @@ def resolve_app_paths(home: Path | None = None, cwd: Path | None = None) -> AppP
     return AppPaths(
         global_dir=global_dir,
         project_dir=project_dir,
-        config_db=global_dir / "config.sqlite",
-        chat_db=project_dir / "chat.sqlite",
+        config_path=global_dir / "config.json",
+        chat_path=project_dir / "chat.json",
     )

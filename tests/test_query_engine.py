@@ -28,7 +28,7 @@ from flyinchat.tools.file_tools import FileReadTool
 def _setup_storage(tmp_path: Path) -> AppPaths:
     paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
     initialize_storage(paths)
-    create_preset_channel(paths.config_db, preset_id="deepseek", api_key="sk-test")
+    create_preset_channel(paths.config_path, preset_id="deepseek", api_key="sk-test")
     return paths
 
 
@@ -77,7 +77,7 @@ class TestQueryEngineBasic:
                 home=tmp_path / "home", cwd=tmp_path / "project"
             )
             initialize_storage(paths)
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = QueryEngine(
                 QueryEngineConfig(paths=paths, conversation_id=conv.id)
             )
@@ -93,7 +93,7 @@ class TestQueryEngineBasic:
 
         async def run():
             paths = _setup_storage(tmp_path)
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = _make_query_engine(paths, conv.id)
 
             # Mock the API to return plain text
@@ -118,7 +118,7 @@ class TestQueryEngineBasic:
                 assert result.status == "completed"
                 assert result.final_text == "Hello back"
 
-            messages = list_messages(paths.chat_db, conversation_id=conv.id)
+            messages = list_messages(paths.chat_path, conversation_id=conv.id)
             assert len(messages) >= 2
             assert messages[0].role == "user"
             assert messages[0].content == "hello there"
@@ -131,7 +131,7 @@ class TestQueryEngineBasic:
 
         async def run():
             paths = _setup_storage(tmp_path)
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = _make_query_engine(paths, conv.id)
 
             async def mock_stream(channel, model, messages, usage_info, tools):
@@ -170,7 +170,7 @@ class TestQueryEngineBasic:
             test_file.write_text("file content here")
 
             workspace = tmp_path / "project"
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = _make_query_engine(paths, conv.id)
 
             call_count = 0
@@ -206,7 +206,7 @@ class TestQueryEngineBasic:
                 assert result.status == "completed"
                 assert result.tool_rounds == 1
 
-            messages = list_messages(paths.chat_db, conversation_id=conv.id)
+            messages = list_messages(paths.chat_path, conversation_id=conv.id)
             roles = [(m.role, m.subtype) for m in messages]
             assert ("user", "normal") in roles
             assert ("assistant", "tool_call") in roles
@@ -220,7 +220,7 @@ class TestQueryEngineBasic:
 
         async def run():
             paths = _setup_storage(tmp_path)
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = _make_query_engine(paths, conv.id)
 
             async def mock_stream(channel, model, messages, usage_info, tools):
@@ -244,7 +244,7 @@ class TestQueryEngineBasic:
                 result, _ = await _collect_events(engine, "hello")
 
             assert result.status == "completed"
-            messages = list_messages(paths.chat_db, conversation_id=conv.id)
+            messages = list_messages(paths.chat_path, conversation_id=conv.id)
             assistant = next(msg for msg in messages if msg.role == "assistant")
             content = json.loads(assistant.content)
             assert content == [
@@ -259,7 +259,7 @@ class TestQueryEngineBasic:
 
         async def run():
             paths = _setup_storage(tmp_path)
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = _make_query_engine(paths, conv.id)
 
             async def mock_stream(channel, model, messages, usage_info, tools):
@@ -282,7 +282,7 @@ class TestQueryEngineBasic:
                 await _collect_events(engine, "first")
                 await _collect_events(engine, "second")
 
-            conv_after = get_conversation(paths.chat_db, conversation_id=conv.id)
+            conv_after = get_conversation(paths.chat_path, conversation_id=conv.id)
             assert conv_after is not None
             assert conv_after.current_turn == 2
 
@@ -297,7 +297,7 @@ class TestQueryEngineBasic:
             test_file.parent.mkdir(parents=True, exist_ok=True)
             test_file.write_text("file content here")
 
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             engine = _make_query_engine(paths, conv.id)
 
             call_count = 0
@@ -337,7 +337,7 @@ class TestQueryEngineBasic:
             assert result.tool_rounds == 1
             assert result.final_text == "The file contains: file content here"
 
-            messages = list_messages(paths.chat_db, conversation_id=conv.id)
+            messages = list_messages(paths.chat_path, conversation_id=conv.id)
             roles_subtypes = [(m.role, m.subtype) for m in messages]
             assert ("user", "normal") in roles_subtypes
             assert ("assistant", "tool_call") in roles_subtypes
@@ -369,7 +369,7 @@ class TestQueryEngineBasic:
 
         async def run():
             paths = _setup_storage(tmp_path)
-            conv = create_conversation(paths.chat_db, title="test")
+            conv = create_conversation(paths.chat_path, title="test")
             config = QueryEngineConfig(
                 paths=paths, conversation_id=conv.id, max_tool_rounds=3
             )

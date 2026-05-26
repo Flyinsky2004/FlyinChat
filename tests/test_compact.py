@@ -63,26 +63,26 @@ def test_compaction_policy_custom_budget() -> None:
 
 def test_tool_result_budget_truncates_large_results(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
+    conv = create_conversation(paths.chat_path, title="Test")
 
     long_content = "x" * 10_000
     tool_msg = add_message(
-        paths.chat_db,
+        paths.chat_path,
         conversation_id=conv.id,
         role="tool",
         content=json.dumps({"tool_use_id": "tc_1", "content": long_content}),
     )
 
-    messages = list_messages(paths.chat_db, conversation_id=conv.id)
+    messages = list_messages(paths.chat_path, conversation_id=conv.id)
     api_messages = [{"role": "tool", "tool_use_id": "tc_1", "content": long_content}]
     policy = CompactionPolicy(context_window=125_000, tool_result_budget_chars=8_000)
-    engine = CompactionEngine(paths.chat_db, conv.id)
+    engine = CompactionEngine(paths.chat_path, conv.id)
 
     result = engine.compact_if_needed(messages, api_messages, policy, force=True)
     assert result.applied is True
     assert result.strategy == "tool_result_budget"
 
-    updated = list_messages(paths.chat_db, conversation_id=conv.id)
+    updated = list_messages(paths.chat_path, conversation_id=conv.id)
     parsed = json.loads(updated[0].content)
     assert "truncated" in parsed["content"]
     assert len(parsed["content"]) < 10_000
@@ -91,19 +91,19 @@ def test_tool_result_budget_truncates_large_results(tmp_path: Path) -> None:
 
 def test_tool_result_budget_skips_small_results(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
+    conv = create_conversation(paths.chat_path, title="Test")
 
     add_message(
-        paths.chat_db,
+        paths.chat_path,
         conversation_id=conv.id,
         role="tool",
         content=json.dumps({"tool_use_id": "tc_1", "content": "short output"}),
     )
 
-    messages = list_messages(paths.chat_db, conversation_id=conv.id)
+    messages = list_messages(paths.chat_path, conversation_id=conv.id)
     api_messages = [{"role": "tool", "tool_use_id": "tc_1", "content": "short output"}]
     policy = CompactionPolicy(context_window=125_000)
-    engine = CompactionEngine(paths.chat_db, conv.id)
+    engine = CompactionEngine(paths.chat_path, conv.id)
 
     result = engine.compact_if_needed(messages, api_messages, policy)
     assert result.applied is False
@@ -111,19 +111,19 @@ def test_tool_result_budget_skips_small_results(tmp_path: Path) -> None:
 
 def test_tool_result_budget_skips_non_tool_messages(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
+    conv = create_conversation(paths.chat_path, title="Test")
 
     add_message(
-        paths.chat_db,
+        paths.chat_path,
         conversation_id=conv.id,
         role="user",
         content="x" * 10_000,
     )
 
-    messages = list_messages(paths.chat_db, conversation_id=conv.id)
+    messages = list_messages(paths.chat_path, conversation_id=conv.id)
     api_messages = [{"role": "user", "content": "x" * 10_000}]
     policy = CompactionPolicy(context_window=125_000)
-    engine = CompactionEngine(paths.chat_db, conv.id)
+    engine = CompactionEngine(paths.chat_path, conv.id)
 
     result = engine.compact_if_needed(messages, api_messages, policy)
     assert result.applied is False
@@ -131,32 +131,32 @@ def test_tool_result_budget_skips_non_tool_messages(tmp_path: Path) -> None:
 
 def test_list_active_messages_no_compact(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
-    add_message(paths.chat_db, conversation_id=conv.id, role="user", content="hello")
-    add_message(paths.chat_db, conversation_id=conv.id, role="assistant", content="hi")
+    conv = create_conversation(paths.chat_path, title="Test")
+    add_message(paths.chat_path, conversation_id=conv.id, role="user", content="hello")
+    add_message(paths.chat_path, conversation_id=conv.id, role="assistant", content="hi")
 
-    active = list_active_messages(paths.chat_db, conversation_id=conv.id)
+    active = list_active_messages(paths.chat_path, conversation_id=conv.id)
     assert len(active) == 2
 
 
 def test_list_active_messages_with_compact_boundary(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
+    conv = create_conversation(paths.chat_path, title="Test")
 
     # pre-compact messages
-    add_message(paths.chat_db, conversation_id=conv.id, role="user", content="old msg 1")
-    add_message(paths.chat_db, conversation_id=conv.id, role="assistant", content="old reply 1")
+    add_message(paths.chat_path, conversation_id=conv.id, role="user", content="old msg 1")
+    add_message(paths.chat_path, conversation_id=conv.id, role="assistant", content="old reply 1")
 
     # compact summary
     add_message(
-        paths.chat_db,
+        paths.chat_path,
         conversation_id=conv.id,
         role="system",
         content=json.dumps({"type": "compact_summary", "summary": "Summarized...", "summarized_count": 2}),
     )
     # compact boundary
     add_message(
-        paths.chat_db,
+        paths.chat_path,
         conversation_id=conv.id,
         role="system",
         content=json.dumps({
@@ -174,36 +174,36 @@ def test_list_active_messages_with_compact_boundary(tmp_path: Path) -> None:
     )
 
     # post-compact messages
-    add_message(paths.chat_db, conversation_id=conv.id, role="user", content="new msg")
-    add_message(paths.chat_db, conversation_id=conv.id, role="assistant", content="new reply")
+    add_message(paths.chat_path, conversation_id=conv.id, role="user", content="new msg")
+    add_message(paths.chat_path, conversation_id=conv.id, role="assistant", content="new reply")
 
-    active = list_active_messages(paths.chat_db, conversation_id=conv.id)
+    active = list_active_messages(paths.chat_path, conversation_id=conv.id)
     assert len(active) == 4  # summary + boundary + new user + new assistant
 
-    all_msgs = list_messages(paths.chat_db, conversation_id=conv.id)
+    all_msgs = list_messages(paths.chat_path, conversation_id=conv.id)
     assert len(all_msgs) == 6  # all messages still in DB
 
 
 def test_update_message_content(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
-    msg = add_message(paths.chat_db, conversation_id=conv.id, role="user", content="original")
+    conv = create_conversation(paths.chat_path, title="Test")
+    msg = add_message(paths.chat_path, conversation_id=conv.id, role="user", content="original")
 
-    update_message_content(paths.chat_db, message_id=msg.id, content="updated")
+    update_message_content(paths.chat_path, message_id=msg.id, content="updated")
 
-    msgs = list_messages(paths.chat_db, conversation_id=conv.id)
+    msgs = list_messages(paths.chat_path, conversation_id=conv.id)
     assert msgs[0].content == "updated"
 
 
 def test_compact_if_needed_below_threshold_noop(tmp_path: Path) -> None:
     paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
-    conv = create_conversation(paths.chat_db, title="Test")
-    add_message(paths.chat_db, conversation_id=conv.id, role="user", content="hi")
+    conv = create_conversation(paths.chat_path, title="Test")
+    add_message(paths.chat_path, conversation_id=conv.id, role="user", content="hi")
 
-    messages = list_messages(paths.chat_db, conversation_id=conv.id)
+    messages = list_messages(paths.chat_path, conversation_id=conv.id)
     api_messages = [{"role": "user", "content": "hi"}]
     policy = CompactionPolicy(context_window=125_000)
-    engine = CompactionEngine(paths.chat_db, conv.id)
+    engine = CompactionEngine(paths.chat_path, conv.id)
 
     result = engine.compact_if_needed(messages, api_messages, policy)
     assert result.applied is False
