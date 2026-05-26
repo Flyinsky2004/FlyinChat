@@ -1314,7 +1314,7 @@ class FlyinChatApp(App[None]):
                 lines.append(hint)
                 self.query_one("#empty-state", Vertical).display = False
                 self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-                self.query_one("#chat-area", Container).scroll_end(animate=False)
+                self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
                 return True
         self._show_panel(fallback_title, fallback_body)
         return False
@@ -1345,7 +1345,7 @@ class FlyinChatApp(App[None]):
         lines.append(f"**{t(TKey.LABEL_ASSISTANT)}**\n\n{self._streaming_assistant_text}")
         self.query_one("#empty-state", Vertical).display = False
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-        self.query_one("#chat-area", Container).scroll_end(animate=False)
+        self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
 
     def _render_status_bar(self) -> None:
         if self.paths is None:
@@ -1410,7 +1410,7 @@ class FlyinChatApp(App[None]):
                 lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
 
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-        self.query_one("#chat-area", Container).scroll_end(animate=False)
+        self.call_after_refresh(lambda: self.query_one("#chat-area", Container).scroll_end(animate=False))
 
     def _mask_api_key(self, api_key: str) -> str:
         if len(api_key) <= 6:
