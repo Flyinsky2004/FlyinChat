@@ -75,6 +75,7 @@ _COMMANDS = (
     SelectionItem("/model", "/model", "Choose the primary model"),
     SelectionItem("/thinking", "/thinking", "Toggle reasoning thinking mode on/off"),
     SelectionItem("/reasoning", "/reasoning", "Set reasoning effort level (low/medium/high)"),
+    SelectionItem("/effort", "/effort", "Switch thinking effort level (low/medium/high/xhigh)"),
     SelectionItem("/1M", "/1M", "Toggle 1M context window mode (125K ↔ 1M)"),
     SelectionItem("/sessions", "/sessions", "Open project session history"),
     SelectionItem("/clear", "/clear", "Start a new session"),
@@ -85,6 +86,13 @@ _REASONING_LEVELS = (
     SelectionItem("low", "low", "Fast, minimal reasoning"),
     SelectionItem("medium", "medium", "Balanced reasoning"),
     SelectionItem("high", "high", "Deep, thorough reasoning"),
+)
+
+_EFFORT_LEVELS = (
+    SelectionItem("low", "low", "Thinking off, minimal reasoning"),
+    SelectionItem("medium", "medium", "Thinking on, balanced reasoning"),
+    SelectionItem("high", "high", "Thinking on, deep reasoning"),
+    SelectionItem("xhigh", "xhigh", "Thinking on, maximum reasoning"),
 )
 
 _API_ACTIONS = (
@@ -539,6 +547,8 @@ class FlyinChatApp(App[None]):
                 self._show_thinking_settings()
             case "/reasoning":
                 self._show_reasoning_settings()
+            case "/effort":
+                self._show_effort_settings()
             case "/1M":
                 self._toggle_context_mode()
             case "/sessions":
@@ -583,6 +593,8 @@ class FlyinChatApp(App[None]):
                 self._toggle_thinking(item.key)
             case "reasoning_select":
                 self._set_reasoning_effort(item.key)
+            case "effort_select":
+                self._set_effort(item.key)
             case "session_select":
                 self.active_conversation_id = item.key
                 conv = get_conversation(self.paths.chat_db, conversation_id=item.key)
@@ -1048,6 +1060,57 @@ class FlyinChatApp(App[None]):
             hint,
             fallback_title="Reasoning effort",
             fallback_body=f"Level set to **{updated.reasoning_effort}** for {primary[0].name} / {updated.name}",
+        )
+        self._render_status_bar()
+
+    def _show_effort_settings(self) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            self._show_panel("Effort level", "No primary model configured. Set one with /model.")
+            return
+
+        channel, model = primary
+        if model.thinking_enabled:
+            current = f"think: on, effort: {model.reasoning_effort}"
+        else:
+            current = "think: off (low)"
+
+        self._set_selection(
+            context="effort_select",
+            title="Effort level",
+            items=_EFFORT_LEVELS,
+            header=f"{channel.name} / {model.name}\nCurrent: {current}",
+            footer="Use ↑/↓ to choose, Enter to set.",
+        )
+
+    def _set_effort(self, level: str) -> None:
+        if self.paths is None:
+            return
+
+        primary = get_primary_llm_model(self.paths.config_db)
+        if primary is None:
+            self._clear_selection()
+            return
+
+        model = primary[1]
+        if level == "low":
+            updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=False)
+        else:
+            updated = set_model_thinking(self.paths.config_db, model_id=model.id, enabled=True)
+            updated = set_model_reasoning_effort(self.paths.config_db, model_id=model.id, effort=level)
+        self._clear_selection()
+        if updated.thinking_enabled:
+            hint = f"> Effort set to **think on, {updated.reasoning_effort}** for {primary[0].name} / {updated.name}"
+        else:
+            hint = f"> Effort set to **think off (low)** for {primary[0].name} / {updated.name}"
+        self._render_history_with_hint(
+            hint,
+            fallback_title="Effort level",
+            fallback_body=hint.lstrip("> "),
         )
         self._render_status_bar()
 
