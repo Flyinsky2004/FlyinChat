@@ -134,6 +134,10 @@ class TKey(StrEnum):
     STATUS_THINK = "status.think"
     STATUS_NO_CONV = "status.no_conv"
     STATUS_MSGS = "status.msgs"
+    STATUS_MODE_NORMAL = "status.mode.normal"
+    STATUS_MODE_AUTO_EDIT = "status.mode.auto_edit"
+    STATUS_MODE_YOLO = "status.mode.yolo"
+    STATUS_MODE_PLAN = "status.mode.plan"
 
     # ── Thinking / Effort hints ──
     HINT_THINKING_ON = "hint.thinking.on"

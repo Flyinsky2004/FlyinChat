@@ -227,11 +227,13 @@ async def _stream_openai_compatible(
 
 
 def _convert_messages_for_anthropic(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
-    system_prompt: str | None = None
+    system_parts: list[str] = []
     converted: list[dict[str, Any]] = []
     for msg in messages:
         if msg["role"] == "system":
-            system_prompt = msg["content"]
+            content = msg.get("content", "")
+            if content:
+                system_parts.append(content)
         elif msg["role"] == "tool":
             converted.append({
                 "role": "user",
@@ -247,6 +249,7 @@ def _convert_messages_for_anthropic(messages: list[dict[str, Any]]) -> tuple[str
                 converted.append({"role": msg["role"], "content": content})
             else:
                 converted.append({"role": msg["role"], "content": content})
+    system_prompt = "\n\n".join(system_parts) if system_parts else None
     return system_prompt, converted
 
 

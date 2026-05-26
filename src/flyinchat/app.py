@@ -17,6 +17,7 @@ from .logging_config import configure_logging
 from .message_utils import message_to_api_format, message_to_display
 from .models import LLMChannel, LLMModel
 from .paths import AppPaths
+from .prompt_assembler import mode_int_to_str
 from .query_engine import QueryEngine, QueryEngineConfig, TurnEvent
 from .storage import (
     PROVIDER_PRESETS,
@@ -110,6 +111,7 @@ class FlyinChatApp(App[None]):
         self._prompt_history: tuple[str, ...] = ()
         self._prompt_history_index: int | None = None
         self._prompt_history_draft = ""
+        self._mode: int = 0  # 0=normal, 1=auto_edit, 2=yolo, 3=plan
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
         t = self.i18n.t
@@ -292,6 +294,7 @@ class FlyinChatApp(App[None]):
         self._tool_registry.register(FileWriteTool())
         self._tool_registry.register(BashTool())
         self._tool_executor = ToolExecutor(self._tool_registry)
+        self._apply_mode_permissions()
         if self._query_engine is not None:
             self._query_engine.configure_tools(
                 self._tool_registry, self._tool_executor, self._tool_context
@@ -304,6 +307,7 @@ class FlyinChatApp(App[None]):
                 conversation_id=self.active_conversation_id,
             )
             self._query_engine = QueryEngine(config)
+            self._query_engine.mode = mode_int_to_str(self._mode)
             if self._tool_registry is not None and self._tool_executor is not None and self._tool_context is not None:
                 self._query_engine.configure_tools(
                     self._tool_registry, self._tool_executor, self._tool_context
@@ -428,6 +432,13 @@ class FlyinChatApp(App[None]):
         return message_to_display(msg)
 
     def on_key(self, event: events.Key) -> None:
+        if event.key == "shift+tab":
+            event.prevent_default()
+            self._mode = (self._mode + 1) % 4
+            self._apply_mode_permissions()
+            self._render_status_bar()
+            return
+
         if event.key == "escape":
             if self._is_streaming:
                 self._request_cancel()
@@ -1415,22 +1426,70 @@ class FlyinChatApp(App[None]):
         self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
         self._scroll_chat_to_bottom()
 
+    def _mode_label(self) -> str:
+        """Rich markup label for the current mode."""
+        mode_keys: dict[int, tuple[str, str]] = {
+            0: ("normal", "#7dd3fc"),
+            1: ("auto_edit", "#fbbf24"),
+            2: ("yolo", "bold #dc2626"),
+            3: ("plan", "#60a5fa"),
+        }
+        i18n_keys = {
+            0: TKey.STATUS_MODE_NORMAL,
+            1: TKey.STATUS_MODE_AUTO_EDIT,
+            2: TKey.STATUS_MODE_YOLO,
+            3: TKey.STATUS_MODE_PLAN,
+        }
+        key = i18n_keys[self._mode]
+        _, color = mode_keys[self._mode]
+        label = self.i18n.t(key)
+        return f"[{color}]{label}[/{color}]"
+
+    def _apply_mode_permissions(self) -> None:
+        """Update tool permissions based on current mode."""
+        if self._tool_context is None:
+            return
+        p = self._tool_context.permission
+        if self._mode == 0:  # normal
+            p.allowed_tools = {"file_read"}
+            p.ask_tools = {"file_write", "bash"}
+            p.denied_tools = set()
+        elif self._mode == 1:  # auto_edit
+            p.allowed_tools = {"file_read", "file_write"}
+            p.ask_tools = {"bash"}
+            p.denied_tools = set()
+        elif self._mode == 2:  # yolo
+            p.allowed_tools = None
+            p.ask_tools = set()
+            p.denied_tools = set()
+        elif self._mode == 3:  # plan
+            p.allowed_tools = {"file_read"}
+            p.ask_tools = {"bash"}
+            p.denied_tools = {"file_write"}
+        if self._query_engine is not None:
+            self._query_engine.mode = mode_int_to_str(self._mode)
+
     def _render_status_bar(self) -> None:
         if self.paths is None:
             return
 
         t = self.i18n.t
+        mode_label = self._mode_label()
+
+        def _update(text: str) -> None:
+            self.query_one("#status-bar", Static).update(f"{mode_label}  {text}")
+
         if self._compacting:
-            self.query_one("#status-bar", Static).update(t(TKey.STATUS_COMPACTING))
+            _update(t(TKey.STATUS_COMPACTING))
             return
         if self._is_streaming:
             spinner = self.SPINNER_FRAMES[self._spinner_frame]
-            self.query_one("#status-bar", Static).update(f"{t(TKey.STATUS_WORKING)}... {spinner}")
+            _update(f"{t(TKey.STATUS_WORKING)}... {spinner}")
             return
 
         primary = get_primary_llm_model(self.paths.config_db)
         if primary is None:
-            self.query_one("#status-bar", Static).update(t(TKey.STATUS_NO_MODEL))
+            _update(t(TKey.STATUS_NO_MODEL))
             return
 
         channel, model = primary
@@ -1457,7 +1516,7 @@ class FlyinChatApp(App[None]):
         else:
             parts.append(t(TKey.STATUS_NO_CONV))
 
-        self.query_one("#status-bar", Static).update("  |  ".join(parts))
+        _update("  |  ".join(parts))
 
     def _render_history(self) -> None:
         if self.paths is None or self.active_conversation_id is None:

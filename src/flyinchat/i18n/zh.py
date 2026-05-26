@@ -133,6 +133,10 @@ ZH: dict[TKey, str] = {
     TKey.STATUS_THINK: "思考: {status}",
     TKey.STATUS_NO_CONV: "无对话",
     TKey.STATUS_MSGS: "{count} 条消息",
+    TKey.STATUS_MODE_NORMAL: "常规",
+    TKey.STATUS_MODE_AUTO_EDIT: "自动",
+    TKey.STATUS_MODE_YOLO: "YOLO",
+    TKey.STATUS_MODE_PLAN: "计划",
 
     # ── Thinking / Effort hints ──
     TKey.HINT_THINKING_ON: "> 思考已**启用** — {channel} / {model}",

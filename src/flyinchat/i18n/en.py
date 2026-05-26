@@ -133,6 +133,10 @@ EN: dict[TKey, str] = {
     TKey.STATUS_THINK: "Think: {status}",
     TKey.STATUS_NO_CONV: "No conversation",
     TKey.STATUS_MSGS: "{count} msgs",
+    TKey.STATUS_MODE_NORMAL: "NORMAL",
+    TKey.STATUS_MODE_AUTO_EDIT: "AUTO EDIT",
+    TKey.STATUS_MODE_YOLO: "YOLO",
+    TKey.STATUS_MODE_PLAN: "PLAN",
 
     # ── Thinking / Effort hints ──
     TKey.HINT_THINKING_ON: "> Thinking is now **enabled** for {channel} / {model}",

@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from .api_client import stream_chat_completion
 from .compact import CompactionEngine, CompactionPolicy
 from .message_utils import message_to_api_format, sanitize_api_messages
+from .prompt_assembler import assemble_system_prompt
 from .models import LLMChannel, LLMModel, TurnResult
 from .paths import AppPaths
 from .storage import (
@@ -49,6 +50,7 @@ class QueryEngineConfig:
 class QueryEngine:
     def __init__(self, config: QueryEngineConfig) -> None:
         self.config = config
+        self.mode: str = "normal"
         self._tool_registry: ToolRegistry | None = None
         self._tool_executor: ToolExecutor | None = None
         self._tool_context: ToolContext | None = None
@@ -162,6 +164,12 @@ class QueryEngine:
             if (formatted := message_to_api_format(msg)) is not None
         ]
         api_messages = sanitize_api_messages(api_messages)
+
+        # ── Assemble and inject system prompt ──
+        compact_text = _extract_compact_summary(api_messages)
+        api_messages = [m for m in api_messages if m.get("role") != "system"]
+        system_prompt = assemble_system_prompt(mode=self.mode, compact_summary=compact_text)
+        api_messages.insert(0, {"role": "system", "content": system_prompt})
 
         tool_list = (
             list(self._tool_registry.tools) if self._tool_registry else None
@@ -799,3 +807,14 @@ class QueryEngine:
             "last_input_tokens": conv.last_input_tokens,
             "status": conv.status,
         }
+
+
+def _extract_compact_summary(api_messages: list[dict]) -> str | None:
+    """Extract compact summary text from system messages in the API message list."""
+    parts: list[str] = []
+    for msg in api_messages:
+        if msg.get("role") == "system":
+            content = msg.get("content", "")
+            if content:
+                parts.append(content)
+    return "\n\n".join(parts) if parts else None
