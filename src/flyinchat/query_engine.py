@@ -5,6 +5,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
 
 from .api_client import stream_chat_completion
 from .compact import CompactionEngine, CompactionPolicy
@@ -21,7 +22,7 @@ from .storage import (
     list_messages,
     update_conversation_usage,
 )
-from .tools.core import PERMISSION_REQUIRED, ToolContext, ToolExecutor, ToolRegistry, ToolResult
+from .tools.core import PERMISSION_REQUIRED, USER_INPUT_REQUIRED, ToolContext, ToolExecutor, ToolRegistry, ToolResult
 from .tools.permission_request import (
     PermissionRequest,
     PermissionRequestStore,
@@ -57,6 +58,7 @@ class QueryEngine:
         self._tool_context: ToolContext | None = None
         self._permission_store = PermissionRequestStore()
         self._pending_permissions: dict[str, asyncio.Future[str]] = {}
+        self._pending_user_inputs: dict[str, asyncio.Future[dict]] = {}
         self._cancel_event = asyncio.Event()
 
     def request_cancel(self) -> None:
@@ -586,10 +588,15 @@ class QueryEngine:
             "executing tool",
             extra={"turn_id": turn_id, "tool_name": tool_name, "tool_use_id": tool_use_id},
         )
-        result = self._tool_executor.execute(tool_name, tool_input, self._tool_context)
+        result = await self._tool_executor.execute(tool_name, tool_input, self._tool_context)
 
         if result.error_code == PERMISSION_REQUIRED:
             return await self._handle_permission_required(
+                turn_id, tool_name, tool_input, tool_use_id, result, on_event
+            )
+
+        if result.error_code == USER_INPUT_REQUIRED:
+            return await self._handle_user_input_required(
                 turn_id, tool_name, tool_input, tool_use_id, result, on_event
             )
 
@@ -670,7 +677,7 @@ class QueryEngine:
                 "permission approved, executing tool",
                 extra={"request_id": request.request_id, "tool_name": tool_name},
             )
-            exec_result = self._tool_executor.execute_approved(
+            exec_result = await self._tool_executor.execute_approved(
                 tool_name, tool_input, self._tool_context
             )
             if exec_result.ok:
@@ -716,7 +723,7 @@ class QueryEngine:
                 "permission always-approved, executing tool",
                 extra={"request_id": request.request_id, "tool_name": tool_name},
             )
-            exec_result = self._tool_executor.execute_approved(
+            exec_result = await self._tool_executor.execute_approved(
                 tool_name, tool_input, self._tool_context
             )
             if exec_result.ok:
@@ -770,6 +777,59 @@ class QueryEngine:
             error_code="PERMISSION_DENIED",
         )
         return self._persist_tool_result(turn_id, tool_name, tool_use_id, timeout_result)
+
+    async def _handle_user_input_required(
+        self,
+        turn_id: str,
+        tool_name: str,
+        tool_input: dict,
+        tool_use_id: str,
+        execute_result: Any,
+        on_event: Callable[[TurnEvent], Awaitable[None]] | None = None,
+    ) -> dict:
+        questions = execute_result.meta.get("questions", [])
+        user_input_id = str(uuid4())
+
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        self._pending_user_inputs[user_input_id] = future
+
+        await self._emit(
+            on_event,
+            TurnEvent(
+                turn_id,
+                "user_input_required",
+                {
+                    "request_id": user_input_id,
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_use_id,
+                    "questions": questions,
+                },
+            ),
+        )
+
+        try:
+            answers = await asyncio.wait_for(future, timeout=120.0)
+        except asyncio.TimeoutError:
+            answers = {"_timeout": True}
+
+        del self._pending_user_inputs[user_input_id]
+
+        result = ToolResult(
+            ok=True,
+            content=json.dumps(answers, ensure_ascii=False),
+        )
+        return self._persist_tool_result(turn_id, tool_name, tool_use_id, result)
+
+    def resolve_user_input(self, request_id: str, answers: dict) -> bool:
+        future = self._pending_user_inputs.get(request_id)
+        if future is None or future.done():
+            logger.warning(
+                "no pending user input to resolve",
+                extra={"request_id": request_id},
+            )
+            return False
+        future.set_result(answers)
+        return True
 
     def _persist_tool_result(
         self, turn_id: str, tool_name: str, tool_use_id: str, result: Any

@@ -1,3 +1,4 @@
+import asyncio
 import platform
 from pathlib import Path
 
@@ -78,7 +79,7 @@ class TestBashToolExecution:
     def test_echo_output(self, tmp_path: Path) -> None:
         tool = BashTool()
         ctx = _make_context(tmp_path)
-        result = tool.run({"command": "echo hello world"}, ctx)
+        result = asyncio.run(tool.run({"command": "echo hello world"}, ctx))
         assert result.ok is True
         assert "hello world" in result.content
 
@@ -86,14 +87,14 @@ class TestBashToolExecution:
         (tmp_path / "afile.txt").write_text("data")
         tool = BashTool()
         ctx = _make_context(tmp_path)
-        result = tool.run({"command": "ls"}, ctx)
+        result = asyncio.run(tool.run({"command": "ls"}, ctx))
         assert result.ok is True
         assert "afile.txt" in result.content
 
     def test_nonzero_exit(self, tmp_path: Path) -> None:
         tool = BashTool()
         ctx = _make_context(tmp_path)
-        result = tool.run({"command": "exit 1"}, ctx)
+        result = asyncio.run(tool.run({"command": "exit 1"}, ctx))
         assert result.ok is False
         assert result.error_code == "NONZERO_EXIT"
         assert result.data.get("exit_code") == 1
@@ -101,23 +102,23 @@ class TestBashToolExecution:
     def test_timeout(self, tmp_path: Path) -> None:
         tool = BashTool()
         ctx = _make_context(tmp_path)
-        result = tool.run({"command": "sleep 60", "timeout": 1}, ctx)
+        result = asyncio.run(tool.run({"command": "sleep 60", "timeout": 1}, ctx))
         assert result.ok is False
         assert result.error_code == "TIMEOUT"
 
     def test_nonexistent_command(self, tmp_path: Path) -> None:
         tool = BashTool()
         ctx = _make_context(tmp_path)
-        result = tool.run(
+        result = asyncio.run(tool.run(
             {"command": "nonexistent_binary_xyz"}, ctx
-        )
+        ))
         assert result.ok is False
         assert result.data.get("exit_code") != 0
 
     def test_pwd_is_workspace(self, tmp_path: Path) -> None:
         tool = BashTool()
         ctx = _make_context(tmp_path)
-        result = tool.run({"command": "pwd"}, ctx)
+        result = asyncio.run(tool.run({"command": "pwd"}, ctx))
         assert result.ok is True
         resolved = str(tmp_path.resolve())
         assert resolved in result.content

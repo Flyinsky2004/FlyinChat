@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,7 +41,7 @@ class FileReadTool:
             return PermissionDecision(False, f"read not allowed: {p}")
         return PermissionDecision(True)
 
-    def run(self, tool_input: Dict[str, Any], context: ToolContext) -> ToolResult:
+    async def run(self, tool_input: Dict[str, Any], context: ToolContext) -> ToolResult:
         p = normalize_path(tool_input["path"], context.workspace_root)
         offset = int(tool_input.get("offset", 1))
         limit = int(tool_input.get("limit", 200))
@@ -61,6 +62,8 @@ class FileReadTool:
         end = min(start + limit, total)
         picked = lines[start:end]
         numbered = "\n".join(f"{i+1}|{line}" for i, line in enumerate(picked, start=start))
+
+        context.recently_read_files[str(p)] = time.time()
 
         return ToolResult(
             ok=True,
@@ -98,7 +101,7 @@ class FileWriteTool:
             return PermissionDecision(False, f"write not allowed: {p}")
         return PermissionDecision(True)
 
-    def run(self, tool_input: Dict[str, Any], context: ToolContext) -> ToolResult:
+    async def run(self, tool_input: Dict[str, Any], context: ToolContext) -> ToolResult:
         p = normalize_path(tool_input["path"], context.workspace_root)
         content = str(tool_input["content"])
         create_dirs = bool(tool_input.get("create_dirs", True))

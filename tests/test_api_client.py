@@ -58,7 +58,7 @@ def test_convert_messages_for_openai_preserves_reasoning_for_tool_calls() -> Non
                 "function": {"name": "file_read", "arguments": '{"path": "a.py"}'},
             }
         ],
-        "content": None,
+        "content": "",
     }
     assert converted[1] == {
         "role": "tool",
@@ -119,7 +119,7 @@ def test_convert_multi_round_tool_call_with_reasoning() -> None:
                     "function": {"name": "file_read", "arguments": '{"path": "test.txt"}'},
                 }
             ],
-            "content": None,
+            "content": "",
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "file content here"},
         {
@@ -153,6 +153,6 @@ def test_reasoning_content_always_preserved_from_history() -> None:
                     "function": {"name": "file_read", "arguments": '{"path": "a.py"}'},
                 }
             ],
-            "content": None,
+            "content": "",
         }
     ]

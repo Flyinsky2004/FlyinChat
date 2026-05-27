@@ -21,6 +21,7 @@ class LLMModel:
     thinking_enabled: bool = True
     reasoning_effort: str = "high"
     context_window: int = 125_000
+    max_output_tokens: int = 384_000
     created_at: str = ""
     updated_at: str = ""
 

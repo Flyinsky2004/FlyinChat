@@ -79,9 +79,7 @@ def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[st
                 converted_msg["reasoning_content"] = "\n".join(reasoning_parts)
             if tool_calls:
                 converted_msg["tool_calls"] = tool_calls
-                converted_msg["content"] = text_content or None
-            else:
-                converted_msg["content"] = text_content or ""
+            converted_msg["content"] = text_content or ""
             converted.append(converted_msg)
         else:
             converted.append(msg)
@@ -106,6 +104,7 @@ async def _stream_openai_compatible(
         "messages": _convert_messages_for_openai(messages),
         "stream": True,
         "stream_options": {"include_usage": True},
+        "max_tokens": model.max_output_tokens,
     }
     if model.thinking_enabled:
         body["reasoning_effort"] = model.reasoning_effort
@@ -267,7 +266,7 @@ async def _stream_anthropic(
 
     body: dict[str, Any] = {
         "model": model.name,
-        "max_tokens": 4096,
+        "max_tokens": model.max_output_tokens,
         "messages": anthropic_messages,
         "stream": True,
     }

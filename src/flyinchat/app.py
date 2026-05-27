@@ -43,13 +43,22 @@ from .storage import (
     set_primary_llm_model,
 )
 from .tools import (
+    AskUserQuestionTool,
     BashTool,
+    EnterPlanModeTool,
+    ExitPlanModeTool,
+    FileEditTool,
     FileReadTool,
     FileWriteTool,
+    GlobTool,
+    GrepTool,
     PermissionContext,
+    TodoWriteTool,
     ToolContext,
     ToolExecutor,
     ToolRegistry,
+    WebFetchTool,
+    WebSearchTool,
 )
 
 _EMPTY_LOGO = """
@@ -106,6 +115,11 @@ class FlyinChatApp(App[None]):
         self._spinner_frame = 0
         self._spinner_timer: object = None
         self._pending_permission_request_id: str | None = None
+        self._pending_permission_tool_input: dict = {}
+        self._pending_user_input_request_id: str | None = None
+        self._pending_user_input_questions: list[dict] = []
+        self._pending_user_input_current_q: int = 0
+        self._pending_user_input_answers: dict[int, str | list[str]] = {}
         self._pending_prompt: str | None = None
         self._streaming_assistant_text = ""
         self._last_stream_render_at = 0.0
@@ -281,8 +295,12 @@ class FlyinChatApp(App[None]):
     def _init_tools(self) -> None:
         workspace = self.paths.project_dir.parent if self.paths is not None else Path.cwd()
         permission = PermissionContext(
-            allowed_tools={"file_read"},
-            ask_tools={"file_write", "bash"},
+            allowed_tools={"file_read", "glob", "grep", "todo_write", "ask_user_question"},
+            ask_tools={
+                "file_write", "file_edit", "bash",
+                "web_fetch", "web_search",
+                "enter_plan_mode", "exit_plan_mode",
+            },
             denied_tools=set(),
             allowed_read_roots=[workspace],
             allowed_write_roots=[workspace],
@@ -296,7 +314,16 @@ class FlyinChatApp(App[None]):
         self._tool_registry = ToolRegistry()
         self._tool_registry.register(FileReadTool())
         self._tool_registry.register(FileWriteTool())
+        self._tool_registry.register(FileEditTool())
         self._tool_registry.register(BashTool())
+        self._tool_registry.register(GlobTool())
+        self._tool_registry.register(GrepTool())
+        self._tool_registry.register(WebFetchTool())
+        self._tool_registry.register(WebSearchTool())
+        self._tool_registry.register(AskUserQuestionTool())
+        self._tool_registry.register(TodoWriteTool())
+        self._tool_registry.register(EnterPlanModeTool())
+        self._tool_registry.register(ExitPlanModeTool())
         self._tool_executor = ToolExecutor(self._tool_registry)
         self._apply_mode_permissions()
         if self._query_engine is not None:
@@ -382,6 +409,8 @@ class FlyinChatApp(App[None]):
                     self._submit_pending(pending)
             case "permission_required":
                 self._show_permission_request(event.data)
+            case "user_input_required":
+                self._show_user_input_form(event.data)
 
     @work
     async def _submit_via_engine(self, prompt: str) -> None:
@@ -471,6 +500,10 @@ class FlyinChatApp(App[None]):
                 event.prevent_default()
                 self._resolve_pending_permission("deny")
                 return
+
+        if self._pending_user_input_request_id:
+            self._handle_user_input_key(event)
+            return
 
         if not self.selection_items:
             if event.key == "up":
@@ -564,13 +597,13 @@ class FlyinChatApp(App[None]):
             self.query_one("#command-menu", Static).display = False
             return
 
+        if not prompt:
+            return
+
         if self._is_streaming:
             self._pending_prompt = prompt
             self._request_cancel()
             event.input.value = ""
-            return
-
-        if not prompt:
             return
 
         if prompt.startswith("/"):
@@ -890,6 +923,215 @@ class FlyinChatApp(App[None]):
             footer=t(TKey.PERM_ACTION_FOOTER),
             target_menu=True,
         )
+
+    def _show_user_input_form(self, data: dict) -> None:
+        request_id = data.get("request_id", "")
+        questions = data.get("questions", [])
+
+        self._pending_user_input_request_id = request_id
+        self._pending_user_input_questions = questions
+        self._pending_user_input_current_q = 0
+        self._pending_user_input_answers = {}
+
+        if not questions:
+            self._resolve_pending_user_input({"_empty": True})
+            return
+
+        self._render_user_input_question()
+
+    def _render_user_input_question(self) -> None:
+        if not self._pending_user_input_questions:
+            return
+
+        q_idx = self._pending_user_input_current_q
+        if q_idx >= len(self._pending_user_input_questions):
+            self._resolve_pending_user_input(self._pending_user_input_answers)
+            return
+
+        q = self._pending_user_input_questions[q_idx]
+        question_text = q.get("question", "")
+        header = q.get("header", "")
+        options = q.get("options", [])
+        multi = q.get("multiSelect", False)
+
+        t = self.i18n.t
+        lines = [
+            f"[{header}] {question_text}",
+            f"({q_idx + 1}/{len(self._pending_user_input_questions)})",
+            "",
+        ]
+        for i, opt in enumerate(options):
+            label = opt.get("label", "")
+            desc = opt.get("description", "")
+            marker = "> " if i == 0 else "  "
+            prev_answer = self._pending_user_input_answers.get(q_idx)
+            if multi and isinstance(prev_answer, list) and label in prev_answer:
+                marker = "[x] "
+            elif not multi and isinstance(prev_answer, str) and prev_answer == label:
+                marker = "(*) "
+            elif not multi and i == 0 and prev_answer is None:
+                marker = "(*) "
+            lines.append(f"{marker}{label} — {desc}")
+
+        if multi:
+            lines.append("")
+            lines.append("Space=toggle  Enter=confirm selection  →=next  ←=prev")
+        else:
+            lines.append("")
+            lines.append("↑↓=navigate  Enter=select  ←=prev")
+
+        questions_display = "\n".join(lines)
+        self.query_one("#command-menu", Static).update(questions_display)
+        self.query_one("#command-menu", Static).display = True
+
+    def _resolve_pending_user_input(self, answers: dict) -> None:
+        engine = self._query_engine
+        if engine is not None and self._pending_user_input_request_id:
+            engine.resolve_user_input(self._pending_user_input_request_id, answers)
+        self._pending_user_input_request_id = None
+        self._pending_user_input_questions = []
+        self._pending_user_input_current_q = 0
+        self._pending_user_input_answers = {}
+        self.query_one("#command-menu", Static).display = False
+        t = self.i18n.t
+        self._set_input_prompt(t(TKey.LABEL_MESSAGE), t(TKey.PLACEHOLDER_INPUT))
+
+    def _handle_user_input_key(self, event: events.Key) -> None:
+        if not self._pending_user_input_questions:
+            return
+
+        q_idx = self._pending_user_input_current_q
+        if q_idx >= len(self._pending_user_input_questions):
+            return
+
+        q = self._pending_user_input_questions[q_idx]
+        options = q.get("options", [])
+        multi = q.get("multiSelect", False)
+
+        if event.key == "escape":
+            event.prevent_default()
+            self._resolve_pending_user_input({"_cancelled": True})
+            return
+
+        if event.key == "left":
+            event.prevent_default()
+            if q_idx > 0:
+                self._pending_user_input_current_q -= 1
+                self._render_user_input_question()
+            return
+
+        if event.key == "right" or event.key == "enter":
+            event.prevent_default()
+            if multi:
+                selected = self._pending_user_input_answers.get(q_idx, [])
+                if not isinstance(selected, list):
+                    selected = []
+                if options and not selected:
+                    selected = [options[0]["label"]]
+                if selected:
+                    self._pending_user_input_answers[q_idx] = selected
+                if q_idx + 1 >= len(self._pending_user_input_questions):
+                    self._resolve_pending_user_input(self._pending_user_input_answers)
+                else:
+                    self._pending_user_input_current_q += 1
+                    self._render_user_input_question()
+            else:
+                if options:
+                    label = options[0]["label"]
+                    # find currently selected by marker
+                    for i, opt in enumerate(options):
+                        prev = self._pending_user_input_answers.get(q_idx)
+                        if isinstance(prev, str) and prev == opt["label"]:
+                            label = opt["label"]
+                            break
+                        if prev is None and i == 0:
+                            label = opt["label"]
+                    self._pending_user_input_answers[q_idx] = label
+                if q_idx + 1 >= len(self._pending_user_input_questions):
+                    self._resolve_pending_user_input(self._pending_user_input_answers)
+                else:
+                    self._pending_user_input_current_q += 1
+                    self._render_user_input_question()
+            return
+
+        if event.key == "up":
+            event.prevent_default()
+            if multi:
+                self._toggle_multi_option(-1)
+            else:
+                self._navigate_single_option(-1)
+            return
+
+        if event.key == "down":
+            event.prevent_default()
+            if multi:
+                self._toggle_multi_option(1)
+            else:
+                self._navigate_single_option(1)
+            return
+
+        if event.key == "space":
+            event.prevent_default()
+            if multi:
+                self._toggle_multi_select()
+            return
+
+    def _navigate_single_option(self, direction: int) -> None:
+        q_idx = self._pending_user_input_current_q
+        q = self._pending_user_input_questions[q_idx]
+        options = q.get("options", [])
+        if not options:
+            return
+
+        current = self._pending_user_input_answers.get(q_idx)
+        if isinstance(current, list):
+            current = None
+        try:
+            current_idx = next(i for i, o in enumerate(options) if o["label"] == current)
+        except StopIteration:
+            current_idx = 0 if direction > 0 else -1
+
+        new_idx = (current_idx + direction) % len(options)
+        self._pending_user_input_answers[q_idx] = options[new_idx]["label"]
+        self._render_user_input_question()
+
+    def _toggle_multi_option(self, direction: int) -> None:
+        q_idx = self._pending_user_input_current_q
+        q = self._pending_user_input_questions[q_idx]
+        options = q.get("options", [])
+        if not options:
+            return
+
+        current = self._pending_user_input_answers.get(q_idx, [])
+        if not isinstance(current, list):
+            current = []
+
+        cursor_label = getattr(self, "_multi_cursor_label", options[0]["label"])
+        try:
+            cursor_idx = next(i for i, o in enumerate(options) if o["label"] == cursor_label)
+        except StopIteration:
+            cursor_idx = 0
+
+        new_idx = (cursor_idx + direction) % len(options)
+        self._multi_cursor_label = options[new_idx]["label"]
+        self._render_user_input_question()
+
+    def _toggle_multi_select(self) -> None:
+        q_idx = self._pending_user_input_current_q
+        q = self._pending_user_input_questions[q_idx]
+        options = q.get("options", [])
+
+        cursor_label = getattr(self, "_multi_cursor_label", options[0]["label"] if options else "")
+        selected = self._pending_user_input_answers.get(q_idx, [])
+        if not isinstance(selected, list):
+            selected = []
+
+        if cursor_label in selected:
+            selected.remove(cursor_label)
+        else:
+            selected.append(cursor_label)
+        self._pending_user_input_answers[q_idx] = selected
+        self._render_user_input_question()
 
     def _resolve_pending_permission(self, resolution: str) -> None:
         engine = self._query_engine
@@ -1600,21 +1842,38 @@ class FlyinChatApp(App[None]):
             return
         p = self._tool_context.permission
         if self._mode == 0:  # normal
-            p.allowed_tools = {"file_read"}
-            p.ask_tools = {"file_write", "bash"}
+            p.allowed_tools = {
+                "file_read", "glob", "grep",
+                "todo_write", "ask_user_question",
+            }
+            p.ask_tools = {
+                "file_write", "file_edit", "bash",
+                "web_fetch", "web_search",
+                "enter_plan_mode", "exit_plan_mode",
+            }
             p.denied_tools = set()
         elif self._mode == 1:  # auto_edit
-            p.allowed_tools = {"file_read", "file_write"}
-            p.ask_tools = {"bash"}
+            p.allowed_tools = {
+                "file_read", "file_write", "file_edit",
+                "glob", "grep", "todo_write", "ask_user_question",
+            }
+            p.ask_tools = {
+                "bash", "web_fetch", "web_search",
+                "enter_plan_mode", "exit_plan_mode",
+            }
             p.denied_tools = set()
         elif self._mode == 2:  # yolo
             p.allowed_tools = None
             p.ask_tools = set()
             p.denied_tools = set()
         elif self._mode == 3:  # plan
-            p.allowed_tools = {"file_read"}
-            p.ask_tools = {"bash"}
-            p.denied_tools = {"file_write"}
+            p.allowed_tools = {
+                "file_read", "glob", "grep",
+                "todo_write", "ask_user_question",
+                "enter_plan_mode", "exit_plan_mode",
+            }
+            p.ask_tools = {"bash", "web_fetch", "web_search"}
+            p.denied_tools = {"file_write", "file_edit"}
         if self._query_engine is not None:
             self._query_engine.mode = mode_int_to_str(self._mode)
 
@@ -1649,6 +1908,8 @@ class FlyinChatApp(App[None]):
         parts.append(f"Effort: {model.reasoning_effort}")
         ctx_label = "1M" if model.context_window >= 1_000_000 else f"{model.context_window // 1000}K"
         parts.append(f"Ctx: {ctx_label}")
+        out_label = f"{model.max_output_tokens // 1000}K" if model.max_output_tokens < 1_000_000 else "1M"
+        parts.append(f"Out: {out_label}")
 
         if self.active_conversation_id is not None:
             msgs = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)

@@ -89,7 +89,7 @@ class BashTool:
                 continue
             base = parts[0]
             if base not in self.ALLOWED_COMMANDS and not self._is_executable(base):
-                return PermissionDecision(False, f"command not in allowlist: {base}")
+                return PermissionDecision(False, f"command not in allowlist: {base}", ask_user=True)
 
         return PermissionDecision(True, "")
 
@@ -97,7 +97,7 @@ class BashTool:
     def _is_executable(name: str) -> bool:
         return name.startswith("./") or name.startswith("/")
 
-    def run(
+    async def run(
         self, tool_input: dict[str, Any], context: ToolContext
     ) -> ToolResult:
         cmd = tool_input.get("command", "").strip()

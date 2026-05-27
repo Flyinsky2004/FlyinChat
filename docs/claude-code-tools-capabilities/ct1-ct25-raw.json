@@ -1,0 +1,615 @@
+[
+  {
+    "id": 1,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct1",
+    "title": "AgentTool：子 Agent 调度器",
+    "headings": [
+      "这个工具到底解决什么问题",
+      "先看它的输入长什么样",
+      "它在工具池里的位置非常特殊",
+      "一张图看它在系统里的位置",
+      "它不是“再开一个模型”这么简单",
+      "子 Agent 为什么不会变成“失控副本”",
+      "调用链可以再细一点",
+      "它和 Task 系统是强绑定的",
+      "真实使用路径是什么",
+      "最容易误解它的地方",
+      "误解一：AgentTool 就是多轮聊天",
+      "误解二：子 Agent 和主线程完全一样"
+    ],
+    "bullets": [
+      "研究型子任务",
+      "后台执行",
+      "多 Agent 协作",
+      "本地 / 远程子 Agent",
+      "description：给子任务一个简短标题",
+      "prompt：真正交给子 Agent 的工作内容",
+      "subagent_type：选择专门类型的 Agent",
+      "model：必要时换模型",
+      "run_in_background：放后台跑",
+      "重新生成子 Agent 的 system prompt"
+    ],
+    "excerpt": "Tools 工具组 0 0 AgentTool：子 Agent 调度器 这个工具到底解决什么问题 AgentTool 是 Claude Code 最有代表性的工具之一。 它解决的不是“读文件”或者“跑命令”这种单点能力，而是： 当主线程模型觉得一个任务太大、太杂、太适合并行时，如何把一部分工作拆给另一个 Agent 去做。 这也是 Claude Code 和普通代码助手的核心分水岭之一。 很多 AI 工具只有一个主线程模型一直往下跑，而 Claude Code 明确支持： 研究型子任务 后台执行 多 Agent 协作 本地 / 远程子 Agent 先看它的输入长什么样 tools/AgentTool/AgentTool.tsx 一上来就把核心参数暴露出来了： const baseInputSchema = z. object ({ description : z. string (). describe ( 'A short (3-5 word) description of the task' ), prompt : z. string (). describe ( 'The task for the agent to perform' ), subagent_type : z. string (). optional (), model : z. enum ([ 'sonnet' , 'opus' , 'haiku' ]). optional (), run_in_background : z. boolean (). optional (), }) 这几个字段已经很说明它的定位： description ：给子任务一个简短标题 prompt ：真正交给子 Agent 的工作内容 subagent_type ：选择专门类型的 Agent model ：必要时换模型 run_in_background ：放后台跑 也就是说， AgentTool 本质上是一个 任务派发器 。 它在工具池里的位置非常特殊 在 Claude Code 的总工具池里，它被放在最前面： exp"
+  },
+  {
+    "id": 2,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct2",
+    "title": "BashTool：Shell 执行器",
+    "headings": [
+      "这个工具为什么是核心中的核心",
+      "先看它依赖了多少子模块",
+      "它不是“万能入口”，而是受约束的执行器",
+      "它会主动理解命令类型",
+      "一张图看 BashTool 的执行链",
+      "安全检查不是装饰，而是主干逻辑",
+      "它和 sandbox 的关系",
+      "前台任务和后台任务是两套路径",
+      "一张图看它和任务系统的关系",
+      "一个典型的真实使用路径",
+      "最容易误解它的地方",
+      "误解一：BashTool 就是越多用越强"
+    ],
+    "bullets": [
+      "跑测试",
+      "跑构建",
+      "看 Git 状态",
+      "调用编译器、包管理器、脚本",
+      "启动开发服务",
+      "执行系统命令",
+      "命令解析",
+      "权限判断",
+      "sandbox 决策",
+      "shell 执行"
+    ],
+    "excerpt": "Tools 工具组 0 0 BashTool：Shell 执行器 这个工具为什么是核心中的核心 如果说 Read 、 Edit 、 Write 是 Claude Code 的精细手术刀， 那 BashTool 就是它的重型工程机械。 它让 Claude Code 真正接入开发环境： 跑测试 跑构建 看 Git 状态 调用编译器、包管理器、脚本 启动开发服务 执行系统命令 没有 BashTool ，Claude Code 顶多是一个“懂代码的文本编辑器”； 有了它，Claude Code 才真正变成“能操作本地工程环境的 Agent”。 先看它依赖了多少子模块 tools/BashTool/BashTool.tsx 的导入非常夸张，这本身就是一个信号： 它绝不是简单 exec() 一下就结束。 import { parseForSecurity } from '../../utils/bash/ast.js' import { bashToolHasPermission } from './bashPermissions.js' import { shouldUseSandbox } from './shouldUseSandbox.js' import { exec } from '../../utils/Shell.js' import { spawnShellTask } from '../../tasks/LocalShellTask/LocalShellTask.js' import { trackGitOperations } from '../shared/gitOperationTracking.js' 这些名字已经说明了它的结构： 命令解析 权限判断 sandbox 决策 shell 执行 后台任务 Git 行为跟踪 它不是“万能入口”，而是受约束的执行器 Claude Code 的 prompt 明确要求： 当有专用工具时，不要优先用 Bash 所以 BashTool 虽然能力很强，但系统并不希望模型无脑全走 Bash。 这也是 Anthropic 工"
+  },
+  {
+    "id": 3,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct3",
+    "title": "FileReadTool：读取文件",
+    "headings": [
+      "它为什么比 cat 更重要",
+      "先看它的 prompt 怎么定义自己",
+      "它不只读文本，还读多模态内容",
+      "一张图看读取链路",
+      "它为什么会影响后续写入",
+      "默认读 2000 行这件事很有意思",
+      "一次典型使用路径",
+      "它和其他工具怎么配合",
+      "最容易误解它的地方",
+      "误解一：Read 只是为了方便展示",
+      "误解二：既然有 Bash，就没必要有 Read",
+      "误解三：Read 只适合源码文件"
+    ],
+    "bullets": [
+      "给模型稳定读取项目文件的入口",
+      "让读取结果结构化、可追踪",
+      "为后续编辑建立“已读状态”",
+      "路径必须可确定",
+      "长文件默认有上限",
+      "文件和目录分开处理",
+      "这个文件之前有没有读过",
+      "读的时候的时间戳是什么",
+      "文件是不是后来又变了",
+      "让模型拿到足够信息"
+    ],
+    "excerpt": "Tools 工具组 0 0 FileReadTool：读取文件 它为什么比 cat 更重要 FileReadTool 表面看只是“读文件”，但在 Claude Code 里，它其实承担了三层职责： 给模型稳定读取项目文件的入口 让读取结果结构化、可追踪 为后续编辑建立“已读状态” 第三点最容易被忽视。 Claude Code 不是随便改文件的，它很强调： 先读，再改 而 FileReadTool 就是这个链路的起点。 先看它的 prompt 怎么定义自己 tools/FileReadTool/prompt.ts ： export const DESCRIPTION = 'Read a file from the local filesystem.' return `Reads a file from the local filesystem. - The file_path parameter must be an absolute path - By default, it reads up to 2000 lines - This tool can only read files, not directories` 这里只是几条规则，但背后是非常明确的产品设计： 路径必须可确定 长文件默认有上限 文件和目录分开处理 这避免了模型随便读、乱猜路径或把“目录浏览”和“文件内容读取”混在一起。 它不只读文本，还读多模态内容 同一个 prompt 文件里还有两条很关键的说明： - This tool allows Claude Code to read images - This tool can read PDF files (. pdf ) - This tool can read Jupyter notebooks (. ipynb files) 这说明 Read 在 Claude Code 里并不是“文本版 cat”，而是统一的 多模态读取入口 。 也正因为如此，Claude Code 才会在 prompt 里强调： 用户给你截图路径时，必须用 Read 去看 一张"
+  },
+  {
+    "id": 4,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct4",
+    "title": "FileEditTool：编辑文件",
+    "headings": [
+      "这个工具解决的不是“能改文件”，而是“怎么安全地改”",
+      "看源码，它的依赖明显比想象中重",
+      "先看工具本体定义",
+      "一张图看编辑链路",
+      "它最关键的一点：要求先读文件",
+      "它不是直接覆盖，而是 patch 驱动",
+      "它还会盯着文件是否被外部修改过",
+      "一次典型使用路径",
+      "它和 FileWriteTool 的区别",
+      "最容易误解它的地方",
+      "误解一：Edit 和 Bash sed 没本质区别",
+      "误解二：Edit 是文本工具，不涉及工程状态"
+    ],
+    "bullets": [
+      "先确认文件读过",
+      "再确认文件没被别人改过",
+      "再确认当前编辑权限允许",
+      "最后才生成 patch 并写回",
+      "diff",
+      "Git 视角",
+      "权限",
+      "文件元数据",
+      "patch 生成",
+      "避免模型盲改"
+    ],
+    "excerpt": "Tools 工具组 0 0 FileEditTool：编辑文件 这个工具解决的不是“能改文件”，而是“怎么安全地改” FileEditTool 负责对已有文件做定点修改。 在 Claude Code 里，它的价值从来不只是“替换一段字符串”，而是： 先确认文件读过 再确认文件没被别人改过 再确认当前编辑权限允许 最后才生成 patch 并写回 也就是说， FileEditTool 体现的是 Claude Code 的 受控编辑模型 。 看源码，它的依赖明显比想象中重 tools/FileEditTool/FileEditTool.ts ： import { countLinesChanged } from '../../utils/diff.js' import { fetchSingleFileGitDiff } from '../../utils/gitDiff.js' import { checkWritePermissionForTool } from '../../utils/permissions/filesystem.js' import { readFileSyncWithMetadata } from '../../utils/fileRead.js' import { getPatchForEdit } from './utils.js' 这些导入已经说明它不是一个简单替换器，而是同时关注： diff Git 视角 权限 文件元数据 patch 生成 先看工具本体定义 export const FileEditTool = buildTool ({ name : FILE_EDIT_TOOL_NAME , searchHint : 'modify file contents in place' , strict : true , ... }) 这里的 strict: true 很重要。 它意味着 Anthropic 对这个工具的输入结构和行为约束更严格，不希望模型随便糊弄参数。 一张图看编辑链路 加载图表中... 它最关键的一点：要求先读文件 Fil"
+  },
+  {
+    "id": 5,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct5",
+    "title": "FileWriteTool：写入文件",
+    "headings": [
+      "它解决的是“整文件写入”问题",
+      "源码里最关键的输入定义",
+      "它的输出比你想的更丰富",
+      "一张图看写入链路",
+      "它也会检查文件是否过期",
+      "它为什么还要接入 diff 和 Git",
+      "它和 FileEditTool 的分工",
+      "一次典型使用路径",
+      "最容易误解它的地方",
+      "误解一：Write 只是“更方便的 echo > file”",
+      "误解二：Write 比 Edit 更强，所以更应该优先用",
+      "误解三：Write 只适合新文件"
+    ],
+    "bullets": [
+      "新建一个文件",
+      "用一整块新内容覆盖一个现有文件",
+      "写到哪里",
+      "写什么内容",
+      "这是创建还是更新",
+      "原文件是什么",
+      "差异补丁是什么",
+      "Git diff 视角下变化如何",
+      "先读",
+      "再写"
+    ],
+    "excerpt": "Tools 工具组 0 0 FileWriteTool：写入文件 它解决的是“整文件写入”问题 FileWriteTool 适合两种典型场景： 新建一个文件 用一整块新内容覆盖一个现有文件 如果说 FileEditTool 更像外科手术， 那 FileWriteTool 更像“整块材料重新铺设”。 Claude Code 明确把这两件事拆成了不同工具，而不是统统交给 shell。 这就是它工程设计上的一个细节点。 源码里最关键的输入定义 tools/FileWriteTool/FileWriteTool.ts ： const inputSchema = z. strictObject ({ file_path : z. string (). describe ( 'The absolute path to the file to write' ), content : z. string (). describe ( 'The content to write to the file' ), }) 它的输入非常干净： 写到哪里 写什么内容 这说明 Write 的职责就是 完整写入 ，而不是做复杂的局部替换逻辑。 它的输出比你想的更丰富 outputSchema 里不仅返回最终内容，还返回： type : z. enum ([ 'create' , 'update' ]) structuredPatch : z. array ( hunkSchema ()) originalFile : z. string (). nullable () gitDiff : gitDiffSchema (). optional () 也就是说， Write 并不是“静默覆盖然后就没了”。 它依然会保留： 这是创建还是更新 原文件是什么 差异补丁是什么 Git diff 视角下变化如何 这很关键，因为它让整文件写入依然处于 Claude Code 的可审计链路里。 一张图看写入链路 加载图表中... 它也会检查文件是否过期 和 Edit 一样， Write 也不是无脑覆盖。 源码里有一段很"
+  },
+  {
+    "id": 6,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct6",
+    "title": "GlobTool：查找文件",
+    "headings": [
+      "这个工具看起来简单，但位置非常关键",
+      "先看它的输入定义",
+      "它是读操作，而且是并发安全的",
+      "一张图看它在搜索链里的位置",
+      "它不是简单的 find",
+      "它会校验 path 不是乱填的",
+      "它还会主动限制结果规模",
+      "它和 GrepTool 的分工",
+      "典型使用路径",
+      "最容易误解它的地方",
+      "误解一：有 Bash 的 find，Glob 就没必要",
+      "误解二：Glob 只是 UI 更好看"
+    ],
+    "bullets": [
+      "pattern：用来表达“想找什么”",
+      "path：用来限制搜索范围",
+      "只读",
+      "可并行",
+      "明确属于“搜索”类工具",
+      "搜索结果结构化",
+      "权限系统可感知",
+      "返回值更适合后续模型处理",
+      "路径是目录",
+      "路径不存在"
+    ],
+    "excerpt": "Tools 工具组 0 0 GlobTool：查找文件 这个工具看起来简单，但位置非常关键 GlobTool 做的事很直接：按文件名或通配模式找文件。 但在 Claude Code 的主循环里，它其实承担的是： 把“我大概知道要找什么文件”变成“我已经定位到候选路径”。 很多复杂任务的第一步，都不是直接读文件，而是先缩小范围。 GlobTool 就是这一步的标准入口。 先看它的输入定义 tools/GlobTool/GlobTool.ts ： const inputSchema = z. strictObject ({ pattern : z. string (). describe ( 'The glob pattern to match files against' ), path : z. string (). optional (). describe ( 'The directory to search in' ), }) 这个 schema 很简单，但设计上很清楚： pattern ：用来表达“想找什么” path ：用来限制搜索范围 也就是说，Claude Code 希望模型不要默认全仓库乱扫，而是学会缩小搜索半径。 它是读操作，而且是并发安全的 源码里这几个声明很值得注意： isConcurrencySafe ( ) { return true } isReadOnly ( ) { return true } isSearchOrReadCommand ( ) { return { isSearch : true , isRead : false } } 这说明系统从一开始就把 GlobTool 定义成： 只读 可并行 明确属于“搜索”类工具 这对主循环调度和 UI 展示都很重要。 一张图看它在搜索链里的位置 加载图表中... 它不是简单的 find GlobTool 内部并不是直接把 Bash find 暴露给模型，而是走自己的文件搜索实现： import { glob } from '../../utils/glob.js' 这意味着： 搜索结果结构"
+  },
+  {
+    "id": 7,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct7",
+    "title": "GrepTool：搜索内容",
+    "headings": [
+      "它是 Claude Code 最常用的“找线索”工具之一",
+      "看它的 schema，就知道它不是简单字符串搜索",
+      "它的底层就是 ripgrep，但不是裸暴露",
+      "一张图看它的常见链路",
+      "它在设计上很重视“结果控量”",
+      "它不只是“返回命中内容”，还区分三种模式",
+      "它和 GlobTool 的边界",
+      "它也是只读且可并行的",
+      "一次真实使用路径",
+      "最容易误解它的地方",
+      "误解一：直接 Bash 跑 rg 就够了",
+      "误解二：Grep 只是“搜字符串”"
+    ],
+    "bullets": [
+      "先 Grep",
+      "再 Read",
+      "再判断要不要 Edit",
+      "搜文件名过滤",
+      "搜文件类型过滤",
+      "只看命中文件",
+      "看内容上下文",
+      "看匹配计数",
+      "分页和截断",
+      "多行模式"
+    ],
+    "excerpt": "Tools 工具组 0 0 GrepTool：搜索内容 它是 Claude Code 最常用的“找线索”工具之一 GrepTool 负责在文件内容里搜索文本或正则模式。 在真实使用里，它常常是 Claude Code 排查问题、理解代码和定位实现的第一步。 如果你把 Claude Code 的常见动作拆开看，会发现很多轮对话其实都是： 先 Grep 再 Read 再判断要不要 Edit 所以 GrepTool 本质上是主循环里的“线索发现器”。 看它的 schema，就知道它不是简单字符串搜索 tools/GrepTool/GrepTool.ts ： const inputSchema = z. strictObject ({ pattern : z. string (), path : z. string (). optional (), glob : z. string (). optional (), output_mode : z. enum ([ 'content' , 'files_with_matches' , 'count' ]). optional (), '-B' : z. number (). optional (), '-A' : z. number (). optional (), '-C' : z. number (). optional (), '-n' : z. boolean (). optional (), '-i' : z. boolean (). optional (), type : z. string (). optional (), head_limit : z. number (). optional (), offset : z. number (). optional (), multiline : z. boolean (). optional (), }) 这说明 GrepTool 不只是“搜某个词”，它还支持： 搜文件名过滤 搜文件类型过滤 只看命中文件 看内容上下文 看匹配计数 分页和截断 多行模式 也就是说，"
+  },
+  {
+    "id": 8,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct8",
+    "title": "NotebookEditTool：编辑 Notebook",
+    "headings": [
+      "它为什么不是普通版 FileEditTool",
+      "关键源码",
+      "调用链",
+      "实现重点",
+      "一次典型使用路径",
+      "它和相邻工具的关系",
+      "最容易误解它的地方",
+      "误解一：Notebook 反正是 JSON，直接 Edit 就行",
+      "误解二：它只是换了个文件扩展名",
+      "小结"
+    ],
+    "bullets": [
+      "一组有顺序的 cell",
+      "混合了 code / markdown",
+      "带输出、元数据、语言信息",
+      "结构被破坏，文件打不开",
+      "只想改一个 cell，却误伤整个 notebook",
+      "强制要求目标文件是 .ipynb",
+      "支持 replace / insert / delete 三种 cell 操作",
+      "insert 时要求明确 cell_type",
+      "校验 cell 是否存在、ID 是否有效",
+      "也要求“先读再改”，和普通文件编辑链路一致"
+    ],
+    "excerpt": "Tools 工具组 0 0 NotebookEditTool：编辑 Notebook 它为什么不是普通版 FileEditTool .ipynb 文件虽然本质上是 JSON，但语义上它不是普通文本文件，而是： 一组有顺序的 cell 混合了 code / markdown 带输出、元数据、语言信息 如果直接把 Notebook 当普通文本改，最容易出现两类问题： 结构被破坏，文件打不开 只想改一个 cell，却误伤整个 notebook 所以 Claude Code 给它单独做了 NotebookEditTool 。 关键源码 tools/NotebookEditTool/NotebookEditTool.ts ： export const inputSchema = z. strictObject ({ notebook_path : z. string (), cell_id : z. string (). optional (), new_source : z. string (), cell_type : z. enum ([ 'code' , 'markdown' ]). optional (), edit_mode : z. enum ([ 'replace' , 'insert' , 'delete' ]). optional (), }) 这几个字段说明它的操作粒度是 cell 级 ，不是整文件字符串级。 调用链 加载图表中... 实现重点 它做了几件普通文件编辑工具不会做的事： 强制要求目标文件是 .ipynb 支持 replace / insert / delete 三种 cell 操作 insert 时要求明确 cell_type 校验 cell 是否存在、ID 是否有效 也要求“先读再改”，和普通文件编辑链路一致 源码里有一条很重要： // Require Read-before-Edit (matches FileEditTool/FileWriteTool). 这说明 Anthropic 很强调一致性： 即使 Notebook 是特殊对象，也"
+  },
+  {
+    "id": 9,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct9",
+    "title": "WebFetchTool：抓取网页",
+    "headings": [
+      "这个工具到底做什么",
+      "它的输入为什么只有两个字段",
+      "一张图看它的完整链路",
+      "它不是直接把网页全文塞回主模型",
+      "这也是它和浏览器工具最大的不同",
+      "中文理解",
+      "权限系统不是按“整个互联网”放行，而是按域名做",
+      "一张图看权限判断",
+      "它对“预批准域名”有特殊优化",
+      "它还内置了缓存机制",
+      "它对 URL 安全做了很多约束",
+      "重定向处理也很谨慎"
+    ],
+    "bullets": [
+      "WebSearchTool：帮模型去网上找结果",
+      "WebFetchTool：拿着确定的 URL 去读具体页面",
+      "先把网页内容抓回来",
+      "再根据 prompt 提炼想要的信息",
+      "抓网页",
+      "转成 markdown",
+      "把 markdown 和用户/模型给的提问一起交给一个更小更快的模型",
+      "只把提炼后的结果回给主循环",
+      "登录态页面交互",
+      "点击、表单、动态操作"
+    ],
+    "excerpt": "Tools 工具组 0 0 WebFetchTool：抓取网页 这个工具到底做什么 WebFetchTool 负责抓取一个 已经知道 URL 的网页 ，把网页内容转成 Claude Code 更容易处理的文本，再根据传入的 prompt 提炼结果。 它和 WebSearchTool 的分工非常明确： WebSearchTool ：帮模型去网上找结果 WebFetchTool ：拿着确定的 URL 去读具体页面 所以你可以把它理解成： Claude Code 的“网页阅读器 + 小模型摘要器” 而不是“联网搜索工具”。 它的输入为什么只有两个字段 tools/WebFetchTool/WebFetchTool.ts ： const inputSchema = z. strictObject ({ url : z. string (). url (). describe ( 'The URL to fetch content from' ), prompt : z. string (). describe ( 'The prompt to run on the fetched content' ), }) 这两个字段刚好对应了它的两步工作： 先把网页内容抓回来 再根据 prompt 提炼想要的信息 所以 WebFetchTool 并不是“单纯下载网页”，而是把“抓取”和“阅读”合并成一个完整动作。 一张图看它的完整链路 加载图表中... 它不是直接把网页全文塞回主模型 这是 WebFetchTool 最值得注意的设计点。 在 tools/WebFetchTool/utils.ts 和 prompt.ts 里，可以看到它会把抓到的网页内容交给一个次级模型处理： import { queryHaiku } from '../../services/api/claude.js' import { makeSecondaryModelPrompt } from './prompt.js' 而 prompt.ts 里定义了这一步的提示词拼装： export function make"
+  },
+  {
+    "id": 10,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct10",
+    "title": "WebSearchTool：联网搜索",
+    "headings": [
+      "这个工具到底做什么",
+      "它的 schema 很简单，但能力很强",
+      "它不是 Bash 调搜索引擎，而是接 Anthropic 的 Web Search 能力",
+      "一张图看搜索链路",
+      "它的核心调用方式很值得研究",
+      "它为什么不是直接把结果返回，而是要先解析内容块",
+      "它的输出其实是“搜索结果 + 说明文本”的混合体",
+      "这也是它比普通搜索 API 更像 Agent 工具的地方",
+      "prompt 里对“来源”要求非常严格",
+      "一张图看它和回答生成的关系",
+      "它还会强制提醒“用当前年份搜索”",
+      "它并不是在所有环境里都能开"
+    ],
+    "bullets": [
+      "WebSearchTool：找信息源",
+      "WebFetchTool：读指定页面",
+      "搜什么",
+      "只搜哪些域名",
+      "排除哪些域名",
+      "它自己重新发起了一次模型调用",
+      "这次调用的目的不是普通回答，而是执行搜索",
+      "搜索工具是通过 extraToolSchemas 注入进去的",
+      "外层是 Claude Code 的标准工具",
+      "内层再发起一次支持 web search 的模型请求"
+    ],
+    "excerpt": "Tools 工具组 0 0 WebSearchTool：联网搜索 这个工具到底做什么 WebSearchTool 负责让 Claude Code 查询互联网的最新信息。 它解决的核心问题不是“打开某个网页”，而是： 当主线程需要知道当前世界上最近发生了什么、某个产品最新文档是什么、某个问题有哪些公开资料时，如何安全地发起联网搜索。 所以它和 WebFetchTool 的区别一定要先记清： WebSearchTool ：找信息源 WebFetchTool ：读指定页面 在真实使用里，这两个工具经常是一前一后配合。 它的 schema 很简单，但能力很强 tools/WebSearchTool/WebSearchTool.ts ： const inputSchema = z. strictObject ({ query : z. string (). min ( 2 ). describe ( 'The search query to use' ), allowed_domains : z. array (z. string ()). optional (), blocked_domains : z. array (z. string ()). optional (), }) 看起来只有 3 个字段，但已经涵盖了最关键的搜索控制： 搜什么 只搜哪些域名 排除哪些域名 这意味着 Claude Code 的联网搜索不是“随便搜一下”，而是支持受约束的搜索。 它不是 Bash 调搜索引擎，而是接 Anthropic 的 Web Search 能力 源码里最关键的一段是这部分工具 schema 构造： function makeToolSchema ( input : Input ): BetaWebSearchTool20250305 { return { type : 'web_search_20250305' , name : 'web_search' , allowed_domains : input. allowed_domains , blocked_domains :"
+  },
+  {
+    "id": 11,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct11",
+    "title": "TodoWriteTool：待办清单",
+    "headings": [
+      "它不是普通 checklist，而是会话内任务外显",
+      "关键源码",
+      "调用链",
+      "实现重点",
+      "一次典型使用路径",
+      "它和相邻工具的关系",
+      "小结"
+    ],
+    "bullets": [
+      "TodoWriteTool：轻量、会话内、快速追踪",
+      "TaskCreateTool 系列：结构化、正式任务系统",
+      "所有 todo 都完成时，会直接把列表清空",
+      "如果结束的是一个 3 项以上的复杂任务，而且没有验证步骤，会提醒生成 verification nudge",
+      "用户给一个中等复杂任务",
+      "模型先写 3-5 个 todo",
+      "每做完一项就更新状态",
+      "最后一项关闭时，如果没有验证，会被提醒补验证"
+    ],
+    "excerpt": "Tools 工具组 0 0 TodoWriteTool：待办清单 它不是普通 checklist，而是会话内任务外显 TodoWriteTool 是 Claude Code 经典的轻量任务管理工具。 它的作用不是替代正式任务系统，而是让模型在当前会话里把工作拆成一串可见的 todo。 你可以把它理解成： TodoWriteTool ：轻量、会话内、快速追踪 TaskCreateTool 系列：结构化、正式任务系统 关键源码 tools/TodoWriteTool/TodoWriteTool.ts ： const inputSchema = z. strictObject ({ todos : TodoListSchema (). describe ( 'The updated todo list' ), }) 而真正的状态写回是： context. setAppState ( prev => ({ ...prev, todos : { ...prev. todos , [todoKey]: newTodos, }, })) 这说明它本质上是一个 AppState 写入工具 。 调用链 加载图表中... 实现重点 它有两个很有意思的设计： 所有 todo 都完成时，会直接把列表清空 如果结束的是一个 3 项以上的复杂任务，而且没有验证步骤，会提醒生成 verification nudge 源码里这段很关键： if ( allDone && todos. length >= 3 && !todos. some ( t => /verif/i . test (t. content )) ) { verificationNudgeNeeded = true } 这说明它并不只是“写清单”，还会在任务收尾时推动更严谨的验证。 一次典型使用路径 用户给一个中等复杂任务 模型先写 3-5 个 todo 每做完一项就更新状态 最后一项关闭时，如果没有验证，会被提醒补验证 它和相邻工具的关系 加载图表中... 小结 TodoWriteTool 的价值是： 用最低成本把模型当前计划显式化，"
+  },
+  {
+    "id": 12,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct12",
+    "title": "AskUserQuestionTool：向用户提问",
+    "headings": [
+      "这个工具为什么比“直接问一句话”更高级",
+      "源码先看 schema",
+      "它甚至支持选项预览",
+      "一张图看它在执行流程里的位置",
+      "它和 Plan Mode 的关系尤其重要",
+      "中文含义",
+      "它会严格约束问题结构",
+      "一次典型使用路径",
+      "一张图看它和相邻工具的边界",
+      "它为什么对 Agent 产品特别重要",
+      "最容易误解它的地方",
+      "误解一：这只是个 UI 小工具"
+    ],
+    "bullets": [
+      "需求澄清",
+      "多选决策",
+      "方案比较",
+      "Plan Mode 中的信息补全",
+      "方案 A / 方案 B 对比",
+      "UI 草图对比",
+      "配置示例对比",
+      "代码实现对比",
+      "在 Plan Mode 里，如果你还缺需求信息，先用这个工具补齐",
+      "但如果你已经写完计划，想问“计划行不行”，那不该再用它"
+    ],
+    "excerpt": "Tools 工具组 0 0 AskUserQuestionTool：向用户提问 这个工具为什么比“直接问一句话”更高级 很多人第一次看到 AskUserQuestionTool ，会觉得它不就是“向用户提问”吗？ 但在 Claude Code 里，它其实解决的是一个更深的问题： 当模型执行到一半需要补信息时，如何把“提问”做成正式、结构化、可交互的系统能力，而不是随手打一句自然语言。 这对于 Agent 产品特别重要，因为它关系到： 需求澄清 多选决策 方案比较 Plan Mode 中的信息补全 源码先看 schema tools/AskUserQuestionTool/AskUserQuestionTool.tsx ： const inputSchema = z. strictObject ({ questions : z. array ( questionSchema ()). min ( 1 ). max ( 4 ), answers : z. record (z. string (), z. string ()). optional (), annotations : annotationsSchema (), metadata : z. object ({ source : z. string (). optional () }). optional (), }) 而单个问题本身也有非常完整的结构： const questionSchema = z. object ({ question : z. string (), header : z. string (), options : z. array ( questionOptionSchema ()). min ( 2 ). max ( 4 ), multiSelect : z. boolean (). default ( false ), }) 这说明它不是普通聊天，而是一个正式的 表单式交互工具 。 它甚至支持选项预览 tools/AskUserQuestionTool/prompt.ts 里专门定义了"
+  },
+  {
+    "id": 13,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct13",
+    "title": "SkillTool：执行 Skills",
+    "headings": [
+      "它不是命令别名，而是技能运行时",
+      "关键源码",
+      "调用链",
+      "它还兼容 MCP skills",
+      "一次典型使用路径",
+      "它和相邻工具的关系",
+      "小结"
+    ],
+    "bullets": [
+      "找到 skill 对应的 command",
+      "解析参数",
+      "处理本地 skill 和 MCP skill",
+      "必要时 fork 一个子 Agent 去跑",
+      "用户输入 /commit",
+      "SkillTool 找到这个 skill 的 command",
+      "skill prompt 被展开",
+      "必要时 fork 子 Agent 跑完整流程",
+      "结果回到主线程"
+    ],
+    "excerpt": "Tools 工具组 0 0 SkillTool：执行 Skills 它不是命令别名，而是技能运行时 很多人第一次看到 /commit 、 /verify 、 /update-config 这类 skill，会以为它们只是更长 prompt 的快捷方式。 但从源码看， SkillTool 明显比“文本别名”复杂得多。 它负责的是： 找到 skill 对应的 command 解析参数 处理本地 skill 和 MCP skill 必要时 fork 一个子 Agent 去跑 所以更准确的说法是： SkillTool 是 Claude Code 的技能执行器。 关键源码 tools/SkillTool/SkillTool.ts ： import { builtInCommandNames, findCommand, getCommands, } from 'src/commands.js' import { runAgent } from '../AgentTool/runAgent.js' 文件里还有一段很关键： async function executeForkedSkill ( command : Command & { type : 'prompt' }, ... ): Promise < ToolResult < Output >> { ... } 这说明 skill 执行并不总在当前线程内完成，复杂 skill 可以 fork。 调用链 加载图表中... 它还兼容 MCP skills 源码里专门有一段： async function getAllCommands ( context : ToolUseContext ): Promise < Command []> { const mcpSkills = context . getAppState () . mcp . commands . filter ( cmd => cmd. type === 'prompt' && cmd. loadedFrom === 'mcp' , ) ... } 这说明 Skill"
+  },
+  {
+    "id": 14,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct14",
+    "title": "EnterPlanModeTool：进入 Plan Mode",
+    "headings": [
+      "它的本质是状态切换，不是提示词切换",
+      "关键源码",
+      "调用链",
+      "为什么它不能在 agent context 里随便用",
+      "它和 AskUserQuestionTool 的关系",
+      "小结"
+    ],
+    "bullets": [
+      "权限模式",
+      "会话目标",
+      "用户交互预期"
+    ],
+    "excerpt": "Tools 工具组 0 0 EnterPlanModeTool：进入 Plan Mode 它的本质是状态切换，不是提示词切换 EnterPlanModeTool 的作用不是“让模型多想一会儿”，而是把当前会话切到一种新的运行状态： plan 。 这意味着系统会同时改变： 权限模式 会话目标 用户交互预期 所以它本质上是一个 运行时状态切换工具 。 关键源码 tools/EnterPlanModeTool/EnterPlanModeTool.ts ： import { handlePlanModeTransition } from '../../bootstrap/state.js' import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js' import { prepareContextForPlanMode } from '../../utils/permissions/permissionSetup.js' 真正的核心逻辑在 call() ： context. setAppState ( prev => ({ ...prev, toolPermissionContext : applyPermissionUpdate ( prepareContextForPlanMode (prev. toolPermissionContext ), { type : 'setMode' , mode : 'plan' , destination : 'session' }, ), })) 调用链 加载图表中... 为什么它不能在 agent context 里随便用 源码里有一条硬限制： if (context. agentId ) { throw new Error ( 'EnterPlanMode tool cannot be used in agent contexts' ) } 这说明 Anthropic 不希望子 Agent 随便把自己切进 Plan Mode， "
+  },
+  {
+    "id": 15,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct15",
+    "title": "ExitPlanModeTool：退出 Plan Mode",
+    "headings": [
+      "它不是“结束规划”，而是“提交规划”",
+      "关键源码",
+      "调用链",
+      "它和 AskUserQuestionTool 的边界",
+      "它为什么重要",
+      "小结"
+    ],
+    "bullets": [
+      "先写 plan file",
+      "再调用这个工具",
+      "让用户审批",
+      "不确定需求：AskUserQuestionTool",
+      "计划写完求批准：ExitPlanModeTool",
+      "写一堆计划",
+      "再随便发句自然语言"
+    ],
+    "excerpt": "Tools 工具组 0 0 ExitPlanModeTool：退出 Plan Mode 它不是“结束规划”，而是“提交规划” ExitPlanModeTool 的名字容易让人误会。 它真正做的并不是简单退出，而是： 当计划已经写好后，把计划提交给用户审批。 所以它代表的是 Plan Mode 的 交付节点 ，不是随便离开规划态。 关键源码 tools/ExitPlanModeTool/prompt.ts ： Use this tool when you are in plan mode and have finished writing your plan to the plan file and are ready for user approval. 这个 prompt 已经很明确了： 先写 plan file 再调用这个工具 让用户审批 调用链 加载图表中... 它和 AskUserQuestionTool 的边界 这个边界 Anthropic 写得很死： 不确定需求： AskUserQuestionTool 计划写完求批准： ExitPlanModeTool 也就是说： 不要用普通提问工具去问“这个计划可以吗” 那是 ExitPlanModeTool 的职责。 它为什么重要 如果没有这个工具，Plan Mode 很容易退化成： 写一堆计划 再随便发句自然语言 有了它之后，系统才能把“计划已完成、待审批”当成一个正式状态。 小结 ExitPlanModeTool 的意义在于： 它把规划阶段的收尾和审批流程，变成了 Claude Code 里一个明确的状态转换点。"
+  },
+  {
+    "id": 16,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct16",
+    "title": "TaskCreateTool：创建任务",
+    "headings": [
+      "它把待办项升级成正式任务对象",
+      "关键源码",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [
+      "有 id",
+      "有 subject",
+      "有 description",
+      "有状态",
+      "可被后续更新、阻塞、归属"
+    ],
+    "excerpt": "Tools 工具组 0 0 TaskCreateTool：创建任务 它把待办项升级成正式任务对象 TaskCreateTool 不是简单往列表里插一行文本，而是把一个工作项创建成正式任务对象： 有 id 有 subject 有 description 有状态 可被后续更新、阻塞、归属 这说明 Claude Code 的任务系统已经不是展示层小功能，而是真正的运行时对象系统。 关键源码 const taskId = await createTask ( getTaskListId (), { subject, description, activeForm, status : 'pending' , owner : undefined , blocks : [], blockedBy : [], metadata, }) 随后它还会执行 hook： const generator = executeTaskCreatedHooks (...) 调用链 加载图表中... 小结 TaskCreateTool 代表的是 Claude Code 从“todo 文本”到“正式任务对象”的那一步。"
+  },
+  {
+    "id": 17,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct17",
+    "title": "TaskGetTool：读取任务",
+    "headings": [
+      "它是任务系统里的单点查询入口",
+      "关键源码",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [
+      "description",
+      "blocks",
+      "blockedBy"
+    ],
+    "excerpt": "Tools 工具组 0 0 TaskGetTool：读取任务 它是任务系统里的单点查询入口 TaskGetTool 的职责很纯粹：按 ID 读取单个任务。 但它的重要性在于，它让主线程可以在复杂任务流里随时检查某个任务当前的真实状态，而不是只看 UI 记忆。 关键源码 const task = await getTask (taskListId, taskId) 返回内容除了标题和状态，还包括： description blocks blockedBy 这说明它查询的不是“列表项”，而是带依赖关系的任务对象。 调用链 加载图表中... 小结 TaskGetTool 让任务系统具备了正式对象查询能力，而不是只能看列表摘要。"
+  },
+  {
+    "id": 18,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct18",
+    "title": "TaskUpdateTool：更新任务",
+    "headings": [
+      "它是任务系统的主写入口",
+      "关键源码",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [],
+    "excerpt": "Tools 工具组 0 0 TaskUpdateTool：更新任务 它是任务系统的主写入口 TaskUpdateTool 负责修改任务对象本身。 如果说 TaskCreateTool 是创建节点，那 TaskUpdateTool 就是任务流真正推进的主干工具。 关键源码 它支持更新的字段非常多： const inputSchema = z. strictObject ({ taskId : z. string (), subject : z. string (). optional (), description : z. string (). optional (), activeForm : z. string (). optional (), status : TaskUpdateStatusSchema . optional (), addBlocks : z. array (z. string ()). optional (), addBlockedBy : z. array (z. string ()). optional (), owner : z. string (). optional (), metadata : z. record (z. string (), z. unknown ()). optional (), }) 这说明它不只是“改状态”，而是整个任务对象的维护入口。 调用链 加载图表中... 小结 TaskUpdateTool 是 Claude Code 正式任务系统里最像“状态机推进器”的工具。"
+  },
+  {
+    "id": 19,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct19",
+    "title": "TaskListTool：列出任务",
+    "headings": [
+      "它给主线程提供全局任务视图",
+      "关键源码",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [],
+    "excerpt": "Tools 工具组 0 0 TaskListTool：列出任务 它给主线程提供全局任务视图 TaskListTool 的作用是让模型重新看到“现在有哪些任务、谁卡住了谁、哪些还没完成”。 在多步流程中，它相当于任务系统的总览面板。 关键源码 const allTasks = ( await listTasks (taskListId)). filter ( t => !t. metadata ?. _internal , ) 它还会过滤已解决阻塞项，让输出更贴近“当前可行动状态”。 调用链 加载图表中... 小结 TaskListTool 让 Claude Code 在复杂任务流里具备了“抬头看全局”的能力。"
+  },
+  {
+    "id": 20,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct20",
+    "title": "TaskStopTool：停止任务",
+    "headings": [
+      "它负责中断后台执行，不是删除任务记录",
+      "关键源码",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [
+      "BashTool 启动的后台 shell",
+      "AgentTool 启动的后台 agent",
+      "任务存在",
+      "任务当前确实是 running"
+    ],
+    "excerpt": "Tools 工具组 0 0 TaskStopTool：停止任务 它负责中断后台执行，不是删除任务记录 TaskStopTool 的目标很明确： 停止一个正在运行的后台任务。 这通常对应两类来源： BashTool 启动的后台 shell AgentTool 启动的后台 agent 关键源码 const result = await stopTask (id, { getAppState, setAppState, }) 在此之前它会先校验： 任务存在 任务当前确实是 running 调用链 加载图表中... 小结 TaskStopTool 给 Claude Code 的后台执行链补上了“中断”能力，这是正式任务系统不可缺的一环。"
+  },
+  {
+    "id": 21,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct21",
+    "title": "TaskOutputTool：读取任务输出",
+    "headings": [
+      "它把后台任务输出统一成同一种可读结果",
+      "关键源码",
+      "它还有一个很有意思的现状",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [
+      "shell 任务输出",
+      "本地 agent 输出",
+      "远程 agent 输出"
+    ],
+    "excerpt": "Tools 工具组 0 0 TaskOutputTool：读取任务输出 它把后台任务输出统一成同一种可读结果 TaskOutputTool 用来读取后台任务的输出。 它最重要的价值是统一： shell 任务输出 本地 agent 输出 远程 agent 输出 所以主线程不需要关心底层任务类型差异，只要关心统一返回结构。 关键源码 输入定义： const inputSchema = z. strictObject ({ task_id : z. string (), block : z. boolean (). default ( true ), timeout : z. number (). min ( 0 ). max ( 600000 ). default ( 30000 ), }) 统一输出对象： type TaskOutput = { task_id : string ; task_type : TaskType ; status : string ; description : string ; output : string ; } 它还有一个很有意思的现状 源码 prompt 明写了： DEPRECATED: Prefer using the Read tool on the task's output file path instead. 也就是说，它仍然存在，但 Anthropic 已经在把“读任务输出”引导到更通用的 Read 工具。 这对学习源码很有价值，因为你能看到 Claude Code 运行时能力如何逐步收敛。 调用链 加载图表中... 小结 TaskOutputTool 是后台任务链路里的“统一读口”，即使它未来可能被更通用的 Read 替代。"
+  },
+  {
+    "id": 22,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct22",
+    "title": "SendMessageTool：Agent 通信",
+    "headings": [
+      "它是多 Agent 模式下的通信总线",
+      "关键源码",
+      "调用链",
+      "它支持的不只是 teammate 名称",
+      "小结"
+    ],
+    "bullets": [
+      "* 广播",
+      "uds:<socket-path>",
+      "bridge:<session-id>"
+    ],
+    "excerpt": "Tools 工具组 0 0 SendMessageTool：Agent 通信 它是多 Agent 模式下的通信总线 在 Claude Code 的多 Agent 体系里，普通文本不会自动被其他 teammate 看见。 所以如果一个 Agent 想通知另一个 Agent、广播消息、回复审批，它必须走 SendMessageTool 。 这意味着这个工具不是辅助功能，而是多 Agent 系统真正成立的基础设施。 关键源码 tools/SendMessageTool/SendMessageTool.ts ： const inputSchema = z. object ({ to : z. string (), summary : z. string (). optional (), message : z. union ([z. string (), StructuredMessage ()]), }) 而 StructuredMessage 又支持几类特殊消息： type : 'shutdown_request' type : 'shutdown_response' type : 'plan_approval_response' 这说明它不只是发文本，而是已经支持 协议化消息 。 调用链 加载图表中... 它支持的不只是 teammate 名称 源码注释里写得很清楚， to 还可能是： * 广播 uds:<socket-path> bridge:<session-id> 这说明 Claude Code 的消息路由已经不止本地单进程 teammate，而是扩展到了 bridge / peer 模式。 小结 SendMessageTool 的本质是： 把多 Agent 协作里的消息传递做成正式协议，而不是靠模型输出文本碰运气。"
+  },
+  {
+    "id": 23,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct23",
+    "title": "ListMcpResourcesTool：列出 MCP 资源",
+    "headings": [
+      "它让模型先获得“资源发现能力”",
+      "关键源码",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [],
+    "excerpt": "Tools 工具组 0 0 ListMcpResourcesTool：列出 MCP 资源 它让模型先获得“资源发现能力” ListMcpResourcesTool 的职责很像远程世界里的目录浏览。 如果模型已经接上了 MCP server，但不知道那边具体暴露了哪些资源，第一步就应该用它先列出来。 关键源码 tools/ListMcpResourcesTool/ListMcpResourcesTool.ts ： const inputSchema = z. object ({ server : z. string (). optional (). describe ( 'Optional server name to filter resources by' ), }) 核心逻辑是： const results = await Promise . all ( clientsToProcess. map ( async client => { const fresh = await ensureConnectedClient (client) return await fetchResourcesForClient (fresh) }), ) 这说明它不是静态读缓存，而是围绕 MCP client 连接状态工作的。 调用链 加载图表中... 小结 ListMcpResourcesTool 解决的是资源发现问题，没有它，模型只能盲猜 URI。"
+  },
+  {
+    "id": 24,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct24",
+    "title": "ReadMcpResourceTool：读取 MCP 资源",
+    "headings": [
+      "它是 MCP 世界里的远程 Read",
+      "关键源码",
+      "二进制资源也能处理",
+      "调用链",
+      "小结"
+    ],
+    "bullets": [],
+    "excerpt": "Tools 工具组 0 0 ReadMcpResourceTool：读取 MCP 资源 它是 MCP 世界里的远程 Read ReadMcpResourceTool 的职责非常明确： 给定 server + uri ，把远程 MCP 资源正文读回来。 关键源码 输入定义： export const inputSchema = z. object ({ server : z. string (). describe ( 'The MCP server name' ), uri : z. string (). describe ( 'The resource URI to read' ), }) 实际读取走 MCP SDK： const result = await connectedClient. client . request ( { method : 'resources/read' , params : { uri }, }, ReadResourceResultSchema , ) 二进制资源也能处理 源码里有一段很关键： if (!( 'blob' in c) || typeof c. blob !== 'string' ) { ... } const persisted = await persistBinaryContent (...) 这说明它不仅能读文本资源，也能读二进制 blob，并把内容保存到磁盘路径再返回。 调用链 加载图表中... 小结 ReadMcpResourceTool 把外部上下文读入主循环，是 MCP 集成真正落地的一环。"
+  },
+  {
+    "id": 25,
+    "url": "https://www.xuanyuancode.com/learn-claude-code/tutorials/ct25",
+    "title": "LSPTool：语言服务接入",
+    "headings": [
+      "它让 Claude Code 获得 IDE 级代码智能",
+      "关键源码",
+      "调用链",
+      "它为什么比 GrepTool 高一级",
+      "它也有严格的输入和文件校验",
+      "一张图看它和其他搜索工具的关系",
+      "小结"
+    ],
+    "bullets": [
+      "go to definition",
+      "find references",
+      "hover",
+      "document symbol",
+      "call hierarchy",
+      "GrepTool：字符串匹配",
+      "LSPTool：语言语义",
+      "GrepTool 可能会匹配到注释、字符串、相似名字",
+      "LSPTool 能真正问语言服务器“这个符号定义在哪里”",
+      "文件是否存在"
+    ],
+    "excerpt": "Tools 工具组 0 0 LSPTool：语言服务接入 它让 Claude Code 获得 IDE 级代码智能 LSPTool 的意义不在于“又多了一个搜索工具”，而在于： Claude Code 不再只依赖文本搜索，而是能调用语言服务器做语义级理解。 这让它可以做： go to definition find references hover document symbol call hierarchy 也就是说，它已经接近 IDE 里的“代码智能”层。 关键源码 tools/LSPTool/LSPTool.ts ： const inputSchema = z. strictObject ({ operation : z. enum ([ 'goToDefinition' , 'findReferences' , 'hover' , 'documentSymbol' , 'workspaceSymbol' , 'goToImplementation' , 'prepareCallHierarchy' , 'incomingCalls' , 'outgoingCalls' , ]), filePath : z. string (), line : z. number (). int (). positive (), character : z. number (). int (). positive (), }) 这说明 LSPTool 并不是一个单一 API，而是一整组代码智能操作的统一入口。 调用链 加载图表中... 它为什么比 GrepTool 高一级 两者的本质区别是： GrepTool ：字符串匹配 LSPTool ：语言语义 举例来说，找一个函数定义时： GrepTool 可能会匹配到注释、字符串、相似名字 LSPTool 能真正问语言服务器“这个符号定义在哪里” 所以它更像 IDE 的能力，而不是终端搜索能力。 它也有严格的输入和文件校验 源码里不只是看参数格式，还会检查： 文件是否存在 路径是否是 regular file 大文件限制 当前 LSP 是"
+  }
+]

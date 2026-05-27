@@ -125,6 +125,14 @@ def _format_tool_result(msg: Message, parsed: dict) -> str:
     parts: list[str] = [f"\n\n{status_line}\n"]
     if tool_name == "file_read" and ok:
         parts.append(_format_file_read_result(meta))
+    elif tool_name == "web_fetch" and ok:
+        parts.append(_format_web_fetch_result(meta, content))
+    elif tool_name == "grep" and ok:
+        parts.append(_format_grep_result(meta, content))
+    elif tool_name == "glob" and ok:
+        parts.append(_format_glob_result(meta, content))
+    elif tool_name == "file_edit" and ok:
+        parts.append(_format_file_edit_result(meta))
     else:
         parts.append(_format_result_content(content))
     return "".join(parts)
@@ -149,6 +157,56 @@ def _format_file_read_result(meta: dict) -> str:
         lines.append(f"Lines {offset}-{end_line} of {total_lines}")
 
     return "\n".join(lines)
+
+
+def _format_web_fetch_result(meta: dict, content: str) -> str:
+    data = meta.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    url = data.get("url", "unknown URL")
+    content_length = data.get("content_length", len(content))
+    preview = content[:300] + ("..." if len(content) > 300 else "")
+    return f"Fetched: `{url}`\nSize: {content_length:,} chars\n\nContent is available in conversation context.\n```\n{preview}\n```"
+
+
+def _format_grep_result(meta: dict, content: str) -> str:
+    data = meta.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    matches = data.get("matches", 0)
+    files = data.get("files", 0)
+    lines = content.splitlines()
+    preview_lines = [l for l in lines if l.strip() and not l.startswith("---")][:6]
+    preview = "\n".join(preview_lines)
+    summary = f"{matches} matches across {files} files\n\n```\n{preview}\n```"
+    if len(preview_lines) < matches:
+        summary += "\n... (results in context)"
+    return summary
+
+
+def _format_glob_result(meta: dict, content: str) -> str:
+    data = meta.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    matches = data.get("matches", 0)
+    lines = content.splitlines()
+    preview_lines = [l for l in lines if l.strip()][:8]
+    preview = "\n".join(preview_lines)
+    summary = f"{matches} files\n\n```\n{preview}\n```"
+    if len(preview_lines) < matches:
+        summary += "\n... (results in context)"
+    return summary
+
+
+def _format_file_edit_result(meta: dict) -> str:
+    data = meta.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    path = str(data.get("path") or "")
+    changes = data.get("changes", 0)
+    if changes:
+        return f"`{path}` — {changes} replacement(s)"
+    return f"`{path}` — no changes"
 
 
 def _format_result_content(content: str) -> str:

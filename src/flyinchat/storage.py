@@ -790,6 +790,7 @@ def _model_from_dict(row: dict[str, Any]) -> LLMModel:
         thinking_enabled=bool(row["thinking_enabled"]),
         reasoning_effort=row["reasoning_effort"],
         context_window=int(row["context_window"]),
+        max_output_tokens=int(row.get("max_output_tokens", 384_000)),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
