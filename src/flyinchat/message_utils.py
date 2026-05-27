@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from .models import Message
 
@@ -122,8 +123,32 @@ def _format_tool_result(msg: Message, parsed: dict) -> str:
         status_line += f" — `{error_code}`"
 
     parts: list[str] = [f"\n\n{status_line}\n"]
-    parts.append(_format_result_content(content))
+    if tool_name == "file_read" and ok:
+        parts.append(_format_file_read_result(meta))
+    else:
+        parts.append(_format_result_content(content))
     return "".join(parts)
+
+
+def _format_file_read_result(meta: dict) -> str:
+    data = meta.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    path = str(data.get("path") or "")
+    filename = Path(path).name if path else "file"
+    lines: list[str] = [f"File: **{filename}**"]
+    if path:
+        lines.append(f"`{path}`")
+
+    returned_lines = data.get("returned_lines")
+    total_lines = data.get("total_lines")
+    offset = data.get("offset")
+    if isinstance(offset, int) and isinstance(returned_lines, int) and isinstance(total_lines, int):
+        end_line = max(offset, offset + returned_lines - 1)
+        lines.append(f"Lines {offset}-{end_line} of {total_lines}")
+
+    return "\n".join(lines)
 
 
 def _format_result_content(content: str) -> str:

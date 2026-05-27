@@ -787,6 +787,7 @@ class QueryEngine:
                 "ok": result.ok,
                 "error_code": result.error_code,
                 "elapsed_ms": result.meta.get("elapsed_ms", 0),
+                "data": result.data,
             }),
         )
 
