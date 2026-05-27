@@ -31,6 +31,9 @@ class StructuredFormatter(logging.Formatter):
             "tool_rounds",
             "input_tokens",
             "output_tokens",
+            "url",
+            "status_code",
+            "error_body",
         ):
             value = getattr(record, attr, None)
             if value is not None:

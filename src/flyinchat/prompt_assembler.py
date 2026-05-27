@@ -46,6 +46,7 @@ SAFETY_POLICY = """Tool usage policy:
 2. Read/search tools take priority over write/execute tools.
 3. If the current mode forbids an operation, do NOT attempt to call that tool.
 4. If you receive a permission denial, adjust your approach immediately — do not repeat similar forbidden calls.
+5. CRITICAL: When you state you will take an action (e.g. "Let me use Python to fix this"), you MUST immediately call the tool in the same turn. Never end a response with just a description of what you plan to do.
 
 Output format:
 - For each execution step: "purpose → action → result → next step".

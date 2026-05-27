@@ -30,8 +30,8 @@ PROVIDER_PRESETS = {
     "deepseek": ProviderPreset(
         id="deepseek",
         name="DeepSeek",
-        provider_type="openai_compatible",
-        base_url="https://api.deepseek.com",
+        provider_type="anthropic",
+        base_url="https://api.deepseek.com/anthropic",
         model_names=("deepseek-v4-pro", "deepseek-v4-flash"),
         context_window=1_000_000,
     )

@@ -219,6 +219,8 @@ class QueryEngine:
         compact_retry_remaining = self.config.max_context_retries
         total_input_tokens = 0
         total_output_tokens = 0
+        auto_continue_count = 0
+        max_auto_continues = 3
 
         for round_num in range(max_rounds):
             if self._cancel_event.is_set():
@@ -247,6 +249,7 @@ class QueryEngine:
             thinking_blocks: list[dict] = []
             tool_uses: list[dict] = []
             usage_info: dict = {}
+            had_incomplete_tool_call = False
 
             try:
                 async for event in stream_chat_completion(
@@ -307,6 +310,12 @@ class QueryEngine:
                                     "input": event["input"],
                                 },
                             ),
+                        )
+                    elif event["type"] == "incomplete_tool_call":
+                        had_incomplete_tool_call = True
+                        logger.info(
+                            "detected incomplete tool call, will auto-continue",
+                            extra={"turn_id": turn_id, "tool_name": event.get("name")},
                         )
             except Exception as error:
                 error_str = str(error)
@@ -435,6 +444,65 @@ class QueryEngine:
                 )
 
             if not tool_uses:
+                if had_incomplete_tool_call and round_num + 1 < max_rounds and auto_continue_count < max_auto_continues:
+                    auto_continue_count += 1
+                    logger.info(
+                        "auto-continuing after incomplete tool call",
+                        extra={
+                            "turn_id": turn_id,
+                            "round": round_num,
+                            "auto_continue_count": auto_continue_count,
+                            "tool_name": "unknown",
+                        },
+                    )
+                    # Persist partial assistant message
+                    if thinking_blocks or text_content:
+                        if thinking_blocks:
+                            ac: list[dict] = []
+                            for th in thinking_blocks:
+                                ac.append({
+                                    "type": "thinking",
+                                    "thinking": th["thinking"],
+                                    "signature": th.get("signature", ""),
+                                })
+                            if text_content:
+                                ac.append({"type": "text", "text": text_content})
+                            stored = json.dumps(ac)
+                        else:
+                            stored = text_content
+                        add_message_with_turn(
+                            self.config.paths.chat_path,
+                            conversation_id=self.config.conversation_id,
+                            turn_id=turn_id,
+                            role="assistant",
+                            subtype="normal",
+                            content=stored,
+                        )
+                    # Append partial message + continuation to api_messages
+                    if thinking_blocks:
+                        api_ac: list[dict] = []
+                        for th in thinking_blocks:
+                            api_ac.append({
+                                "type": "thinking",
+                                "thinking": th["thinking"],
+                                "signature": th.get("signature", ""),
+                            })
+                        if text_content:
+                            api_ac.append({"type": "text", "text": text_content})
+                        api_messages.append({"role": "assistant", "content": api_ac})
+                    elif text_content:
+                        api_messages.append({"role": "assistant", "content": text_content})
+                    else:
+                        api_messages.append({"role": "assistant", "content": ""})
+                    api_messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your last response was cut off mid-stream — the tool call JSON was incomplete. "
+                            "Please continue exactly where you left off and complete the tool call you started."
+                        ),
+                    })
+                    continue
+
                 if text_content:
                     if thinking_blocks:
                         assistant_content: list[dict] = []

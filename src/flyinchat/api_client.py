@@ -105,6 +105,7 @@ async def _stream_openai_compatible(
         "stream": True,
         "stream_options": {"include_usage": True},
         "max_tokens": model.max_output_tokens,
+        "max_completion_tokens": model.max_output_tokens,
     }
     if model.thinking_enabled:
         body["reasoning_effort"] = model.reasoning_effort
@@ -120,6 +121,7 @@ async def _stream_openai_compatible(
             "has_tools": tools is not None,
             "thinking": body.get("thinking"),
             "reasoning_effort": body.get("reasoning_effort"),
+            "max_tokens": body.get("max_tokens"),
         },
     )
 
@@ -133,6 +135,15 @@ async def _stream_openai_compatible(
             if response.status_code >= 400:
                 error_body = await response.aread()
                 error_text = error_body.decode(errors="replace")[:2000]
+                logger.error(
+                    "openai compatible request failed",
+                    extra={
+                        "url": url,
+                        "status_code": response.status_code,
+                        "model": body["model"],
+                        "error_body": error_text,
+                    },
+                )
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as e:
@@ -157,6 +168,18 @@ async def _stream_openai_compatible(
                         choices = data.get("choices", [])
                         if not choices:
                             continue
+
+                        finish_reason = choices[0].get("finish_reason")
+                        if finish_reason:
+                            logger.info(
+                                "stream chunk finish_reason",
+                                extra={"finish_reason": finish_reason},
+                            )
+                            if finish_reason == "length":
+                                logger.warning(
+                                    "model output truncated by token limit (finish_reason=length)",
+                                    extra={"output_tokens_so_far": usage_info.get("completion_tokens", 0) if usage_info else 0},
+                                )
 
                         delta = choices[0].get("delta", {})
 
@@ -218,34 +241,117 @@ async def _stream_openai_compatible(
                 parsed = json.loads(entry["arguments"])
                 yield {"type": "tool_use", "id": entry["id"], "name": entry["name"], "input": parsed}
             except json.JSONDecodeError:
-                pass
+                logger.warning(
+                    "stream ended with incomplete tool call, model output may have been truncated",
+                    extra={"tool_name": entry["name"], "partial_args": entry["arguments"][:200]},
+                )
+                yield {"type": "incomplete_tool_call", "name": entry["name"]}
 
 
 def _convert_messages_for_anthropic(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
     system_parts: list[str] = []
     converted: list[dict[str, Any]] = []
+    tool_buffer: list[dict[str, Any]] = []
+
+    def _flush_tools() -> None:
+        if tool_buffer:
+            converted.append({"role": "user", "content": list(tool_buffer)})
+            tool_buffer.clear()
+
     for msg in messages:
         if msg["role"] == "system":
             content = msg.get("content", "")
             if content:
                 system_parts.append(content)
         elif msg["role"] == "tool":
-            converted.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": msg.get("tool_use_id", ""),
-                    "content": msg["content"],
-                }],
+            tool_buffer.append({
+                "type": "tool_result",
+                "tool_use_id": msg.get("tool_use_id", ""),
+                "content": msg["content"],
             })
         else:
+            _flush_tools()
             content = msg.get("content", "")
             if isinstance(content, str):
                 converted.append({"role": msg["role"], "content": content})
             else:
                 converted.append({"role": msg["role"], "content": content})
+
+    _flush_tools()
     system_prompt = "\n\n".join(system_parts) if system_parts else None
     return system_prompt, converted
+
+
+class ToolPairError(Exception):
+    """Raised when tool_use/tool_result pairing is invalid."""
+
+
+def validate_tool_pairing(messages: list[dict[str, Any]]) -> None:
+    """Validate tool_use/tool_result pairing on the Anthropic-converted message list.
+
+    Must be called AFTER _convert_messages_for_anthropic, when tool messages
+    have been converted to role="user" with tool_result content blocks.
+    Raises ToolPairError if the structure is invalid.
+    """
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") != "assistant":
+            i += 1
+            continue
+
+        content = msg.get("content", "")
+        tool_use_ids: list[str] = []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tid = block.get("id", "")
+                    if tid:
+                        tool_use_ids.append(tid)
+
+        if not tool_use_ids:
+            i += 1
+            continue
+
+        # The next non-system message must be user with tool_result blocks
+        j = i + 1
+        while j < len(messages) and messages[j].get("role") == "system":
+            j += 1
+
+        if j >= len(messages):
+            raise ToolPairError(
+                f"assistant has tool_use blocks {tool_use_ids} but no following message with tool_results"
+            )
+
+        next_msg = messages[j]
+        if next_msg.get("role") != "user":
+            raise ToolPairError(
+                f"assistant has tool_use blocks {tool_use_ids} but next message is role='{next_msg.get('role')}' (expected user with tool_results)"
+            )
+
+        result_ids: list[str] = []
+        next_content = next_msg.get("content", "")
+        if isinstance(next_content, list):
+            for block in next_content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    rid = block.get("tool_use_id", "")
+                    if rid:
+                        result_ids.append(rid)
+
+        missing = set(tool_use_ids) - set(result_ids)
+        extra = set(result_ids) - set(tool_use_ids)
+        if missing:
+            raise ToolPairError(
+                f"tool_use ids {sorted(missing)} have no matching tool_result blocks. "
+                f"Found tool_results for: {sorted(result_ids)}"
+            )
+        if extra:
+            logger.warning(
+                "tool_result blocks with no matching tool_use",
+                extra={"extra_tool_result_ids": sorted(extra)},
+            )
+
+        i = j + 1
 
 
 async def _stream_anthropic(
@@ -263,6 +369,7 @@ async def _stream_anthropic(
     }
 
     system_prompt, anthropic_messages = _convert_messages_for_anthropic(messages)
+    validate_tool_pairing(anthropic_messages)
 
     body: dict[str, Any] = {
         "model": model.name,
@@ -281,7 +388,23 @@ async def _stream_anthropic(
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                error_body = await response.aread()
+                error_text = error_body.decode(errors="replace")[:2000]
+                logger.error(
+                    "anthropic stream request failed",
+                    extra={
+                        "url": url,
+                        "status_code": response.status_code,
+                        "model": body["model"],
+                        "error_body": error_text,
+                    },
+                )
+                raise httpx.HTTPStatusError(
+                    f"HTTP {response.status_code} {response.reason_phrase}\nURL: {url}\n{error_text}",
+                    request=response.request,
+                    response=response,
+                )
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data_str = line[6:]
@@ -391,6 +514,17 @@ async def _openai_chat(
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         response = await client.post(url, headers=headers, json=body)
+        if response.status_code >= 400:
+            error_text = response.text[:2000]
+            logger.error(
+                "openai chat request failed",
+                extra={
+                    "url": url,
+                    "status_code": response.status_code,
+                    "model": body["model"],
+                    "error_body": error_text,
+                },
+            )
         response.raise_for_status()
         data = response.json()
     return data["choices"][0]["message"]["content"]
@@ -419,6 +553,17 @@ async def _anthropic_chat(
         body["system"] = system_prompt
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         response = await client.post(url, headers=headers, json=body)
+        if response.status_code >= 400:
+            error_text = response.text[:2000]
+            logger.error(
+                "anthropic chat request failed",
+                extra={
+                    "url": url,
+                    "status_code": response.status_code,
+                    "model": body["model"],
+                    "error_body": error_text,
+                },
+            )
         response.raise_for_status()
         data = response.json()
     for block in data.get("content", []):
