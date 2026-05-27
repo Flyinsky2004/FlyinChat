@@ -614,6 +614,19 @@ class QueryEngine:
                     "max tool rounds reached",
                     extra={"turn_id": turn_id, "max_rounds": max_rounds},
                 )
+                await self._emit(
+                    on_event,
+                    TurnEvent(
+                        turn_id,
+                        "turn_end",
+                        {
+                            "status": "max_rounds",
+                            "tool_rounds": max_rounds,
+                            "input_tokens": total_input_tokens,
+                            "output_tokens": total_output_tokens,
+                        },
+                    ),
+                )
                 return TurnResult(
                     turn_id=turn_id,
                     status="max_rounds",
@@ -622,6 +635,19 @@ class QueryEngine:
                     output_tokens=total_output_tokens,
                 )
 
+        await self._emit(
+            on_event,
+            TurnEvent(
+                turn_id,
+                "turn_end",
+                {
+                    "status": "max_rounds",
+                    "tool_rounds": max_rounds,
+                    "input_tokens": total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                },
+            ),
+        )
         return TurnResult(
             turn_id=turn_id,
             status="max_rounds",
