@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 class StructuredFormatter(logging.Formatter):
@@ -39,11 +40,16 @@ class StructuredFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
-def configure_logging(level: int = logging.INFO) -> None:
-    handler = logging.StreamHandler()
+def configure_logging(level: int = logging.INFO, log_path: Path | None = None) -> None:
+    target_path = log_path if log_path is not None else Path.cwd() / ".flyinchat" / "flyinchat.log"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    handler = logging.FileHandler(target_path, mode="w", encoding="utf-8")
     handler.setFormatter(StructuredFormatter())
     root = logging.getLogger("flyinchat")
     root.setLevel(level)
+    for existing_handler in root.handlers:
+        existing_handler.close()
     root.handlers.clear()
     root.addHandler(handler)
 
