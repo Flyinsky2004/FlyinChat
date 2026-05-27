@@ -114,6 +114,7 @@ class FlyinChatApp(App[None]):
         self._is_streaming = False
         self._spinner_frame = 0
         self._spinner_timer: object = None
+        self._streaming_output_tokens = 0
         self._pending_permission_request_id: str | None = None
         self._pending_permission_tool_input: dict = {}
         self._pending_user_input_request_id: str | None = None
@@ -373,12 +374,15 @@ class FlyinChatApp(App[None]):
             case "turn_start":
                 self._streaming_assistant_text = ""
                 self._last_stream_render_at = 0.0
+                self._streaming_output_tokens = 0
                 self.query_one("#empty-state", Vertical).display = False
             case "thinking":
                 pass
             case "text":
                 self._streaming_assistant_text += event.data.get("content", "")
+                self._streaming_output_tokens = max(1, len(self._streaming_assistant_text) // 4)
                 self._render_streaming_assistant()
+                self._render_status_bar()
             case "tool_use":
                 pass
             case "tool_result":
@@ -1892,7 +1896,11 @@ class FlyinChatApp(App[None]):
             return
         if self._is_streaming:
             spinner = self.SPINNER_FRAMES[self._spinner_frame]
-            _update(f"{t(TKey.STATUS_WORKING)}... {spinner}")
+            tok = self._streaming_output_tokens
+            if tok:
+                _update(f"{t(TKey.STATUS_WORKING)}... {spinner} {tok} tok")
+            else:
+                _update(f"{t(TKey.STATUS_WORKING)}... {spinner}")
             return
 
         primary = get_primary_llm_model(self.paths.config_path)
