@@ -4,6 +4,7 @@ from pathlib import Path
 from .models import Message
 
 _MAX_RESULT_CHARS = 8000
+_MAX_RESULT_LINES = 15
 
 
 def sanitize_api_messages(messages: list[dict]) -> list[dict]:
@@ -223,6 +224,12 @@ def _format_result_content(content: str) -> str:
     except (json.JSONDecodeError, TypeError):
         lang = ""
         formatted = content
+
+    lines = formatted.splitlines()
+    total_lines = len(lines)
+    if total_lines > _MAX_RESULT_LINES:
+        preview = "\n".join(lines[:_MAX_RESULT_LINES])
+        return f"```{lang}\n{preview}\n... ({total_lines - _MAX_RESULT_LINES} more lines, collapsed)\n```"
 
     return f"```{lang}\n{formatted}\n```"
 
