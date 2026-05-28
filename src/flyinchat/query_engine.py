@@ -182,6 +182,19 @@ class QueryEngine:
             skill_injection=compiled_skill.planning_injection if compiled_skill else None,
         )
         api_messages.insert(0, {"role": "system", "content": system_prompt})
+        if compiled_skill and compiled_skill.runtime_state.applied_skills:
+            await self._emit(
+                on_event,
+                TurnEvent(
+                    turn_id,
+                    "skill_resolved",
+                    {
+                        "applied_skills": list(compiled_skill.runtime_state.applied_skills),
+                        "active_phase": compiled_skill.runtime_state.active_phase,
+                        "guards_applied": len(compiled_skill.runtime_guards),
+                    },
+                ),
+            )
 
         tool_list = (
             list(self._tool_registry.tools) if self._tool_registry else None
@@ -727,6 +740,16 @@ class QueryEngine:
             role="system",
             subtype="skill_event",
             content=content,
+        )
+        logger.info(
+            "skill resolved",
+            extra={
+                "turn_id": turn_id,
+                "applied_skills": list(decision.applied_refs),
+                "confidence": decision.confidence,
+                "active_phase": compiled.runtime_state.active_phase,
+                "guard_count": len(compiled.runtime_guards),
+            },
         )
 
     async def _execute_tool(

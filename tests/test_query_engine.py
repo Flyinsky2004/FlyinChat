@@ -452,9 +452,10 @@ Run tests.
                 patch("flyinchat.query_engine.CompactionEngine.compact_if_needed_async", new_callable=AsyncMock) as mock_compact,
             ):
                 mock_compact.return_value.applied = False
-                result, _ = await _collect_events(engine, "please edit this file")
+                result, events = await _collect_events(engine, "please edit this file")
 
             assert result.status == "completed"
+            assert any(event.event_type == "skill_resolved" for event in events)
             assert "safe-edit@0.1.0" in seen_system_prompts[0]
             messages = list_messages(paths.chat_path, conversation_id=conv.id)
             skill_event = next(msg for msg in messages if msg.subtype == "skill_event")

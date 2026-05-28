@@ -429,6 +429,9 @@ class FlyinChatApp(App[None]):
                 pass
             case "tool_result":
                 pass
+            case "skill_resolved":
+                self._render_history()
+                self._render_status_bar()
             case "compact_start":
                 self._compacting = True
                 self._render_status_bar()

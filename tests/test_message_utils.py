@@ -1,6 +1,6 @@
 import json
 
-from flyinchat.message_utils import message_to_display
+from flyinchat.message_utils import message_to_api_format, message_to_display
 from flyinchat.models import Message
 
 
@@ -48,3 +48,39 @@ def test_non_read_tool_result_still_renders_full_content() -> None:
 
     assert "diff --git a/a.py b/a.py" in display
     assert "+changed" in display
+
+
+def test_skill_event_renders_loaded_skill_notice() -> None:
+    msg = Message(
+        id="m1",
+        conversation_id="c1",
+        role="system",
+        subtype="skill_event",
+        content=json.dumps({
+            "event": "skill.resolve.complete",
+            "applied_skills": ["liquid-glass@0.1.0"],
+            "confidence": 1.0,
+            "active_phase": "discover",
+            "guards_applied": [],
+        }),
+        created_at="2026-05-27T00:00:00Z",
+    )
+
+    display = message_to_display(msg)
+
+    assert "Loaded Skill" in display
+    assert "liquid-glass@0.1.0" in display
+    assert "phase: `discover`" in display
+
+
+def test_skill_event_is_not_sent_to_model() -> None:
+    msg = Message(
+        id="m1",
+        conversation_id="c1",
+        role="system",
+        subtype="skill_event",
+        content=json.dumps({"event": "skill.resolve.complete", "applied_skills": ["x@1"]}),
+        created_at="2026-05-27T00:00:00Z",
+    )
+
+    assert message_to_api_format(msg) is None

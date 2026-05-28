@@ -24,7 +24,7 @@ def sanitize_api_messages(messages: list[dict]) -> list[dict]:
 
 
 def message_to_api_format(msg: Message) -> dict | None:
-    if msg.subtype == "permission_event":
+    if msg.subtype in {"permission_event", "skill_event"}:
         return None
     try:
         parsed = json.loads(msg.content)
@@ -52,6 +52,8 @@ def message_to_display(msg: Message) -> str:
         if isinstance(parsed, list):
             return _format_assistant_blocks(parsed)
         if isinstance(parsed, dict):
+            if parsed.get("event") == "skill.resolve.complete":
+                return _format_skill_event(parsed)
             if "event" in parsed:
                 return _format_permission_event(parsed)
             if parsed.get("type") == "compact_boundary":
@@ -260,6 +262,22 @@ def _format_tool_use_input(tool_input: dict) -> str:
         else:
             lines.append(f"- **{key}**: `{json.dumps(value)}`")
     return "\n".join(lines)
+
+
+def _format_skill_event(parsed: dict) -> str:
+    applied = parsed.get("applied_skills", [])
+    if not isinstance(applied, list) or not applied:
+        return ""
+    confidence = parsed.get("confidence", 0)
+    phase = parsed.get("active_phase", "")
+    guards = parsed.get("guards_applied", [])
+    guard_count = len(guards) if isinstance(guards, list) else 0
+    skill_refs = ", ".join(f"`{skill}`" for skill in applied)
+    details = [f"confidence: `{confidence}`"]
+    if phase:
+        details.append(f"phase: `{phase}`")
+    details.append(f"guards: `{guard_count}`")
+    return f"\n\n🧩 **Loaded Skill** {skill_refs}\n" + " · ".join(details)
 
 
 def _format_permission_event(parsed: dict) -> str:
