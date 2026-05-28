@@ -22,6 +22,7 @@ from .models import LLMChannel, LLMModel
 from .paths import AppPaths
 from .prompt_assembler import mode_int_to_str
 from .query_engine import QueryEngine, QueryEngineConfig, TurnEvent
+from .skills import SkillRegistry
 from .storage import (
     PROVIDER_PRESETS,
     add_message,
@@ -135,6 +136,7 @@ class FlyinChatApp(App[None]):
         self._active_mention_span: MentionSpan | None = None
         self._mode: int = 0  # 0=normal, 1=auto_edit, 2=yolo, 3=plan
         self._mcp_manager: MCPManager | None = None
+        self._skill_registry: SkillRegistry | None = None
         self._pending_mcp_action_server: str | None = None
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
@@ -151,6 +153,7 @@ class FlyinChatApp(App[None]):
             SelectionItem("/compact", t(TKey.CMD_COMPACT), t(TKey.CMD_COMPACT_DESC)),
             SelectionItem("/language", t(TKey.CMD_LANGUAGE), t(TKey.CMD_LANGUAGE_DESC)),
             SelectionItem("/mcp", t(TKey.CMD_MCP), t(TKey.CMD_MCP_DESC)),
+            SelectionItem("/skills", t(TKey.CMD_SKILLS), t(TKey.CMD_SKILLS_DESC)),
             SelectionItem("/init", t(TKey.CMD_INIT), t(TKey.CMD_INIT_DESC)),
         )
 
@@ -327,6 +330,8 @@ class FlyinChatApp(App[None]):
             workspace_root=workspace,
             permission=permission,
         )
+        self._skill_registry = SkillRegistry(workspace)
+        self._skill_registry.refresh()
         self._tool_registry = ToolRegistry()
         self._tool_registry.register(FileReadTool())
         self._tool_registry.register(FileWriteTool())
@@ -373,6 +378,7 @@ class FlyinChatApp(App[None]):
             config = QueryEngineConfig(
                 paths=self.paths,
                 conversation_id=self.active_conversation_id,
+                skill_registry=self._skill_registry,
             )
             self._query_engine = QueryEngine(config)
             self._query_engine.mode = mode_int_to_str(self._mode)
@@ -753,11 +759,41 @@ class FlyinChatApp(App[None]):
                 self._run_init()
             case "/mcp":
                 self._show_mcp_servers()
+            case "/skills":
+                self._show_skills()
             case _:
                 self._show_panel(
                     self.i18n.t(TKey.PANEL_UNKNOWN_CMD),
                     self.i18n.t(TKey.PANEL_UNKNOWN_CMD_BODY, command=command),
                 )
+
+    def _show_skills(self) -> None:
+        self._clear_selection()
+        if self.paths is None:
+            return
+        workspace = self.paths.project_dir.parent
+        if self._skill_registry is None:
+            self._skill_registry = SkillRegistry(workspace)
+        snapshot = self._skill_registry.refresh()
+        rows: list[str] = []
+        if snapshot.loaded_skills:
+            rows.append(f"Loaded: {len(snapshot.loaded_skills)}")
+            for skill in snapshot.loaded_skills:
+                manifest = skill.manifest
+                tags = ", ".join(manifest.tags) if manifest.tags else "-"
+                rows.append(
+                    f"- **{manifest.ref}** `{manifest.source}`\n"
+                    f"  {manifest.description}\n"
+                    f"  category: `{manifest.category}` · tags: `{tags}`\n"
+                    f"  path: `{skill.path}`"
+                )
+        else:
+            rows.append(self.i18n.t(TKey.PANEL_SKILLS_EMPTY))
+        if snapshot.invalid_skills:
+            rows.append(f"\nInvalid: {len(snapshot.invalid_skills)}")
+            for invalid in snapshot.invalid_skills:
+                rows.append(f"- `{invalid.path}`\n  {invalid.reason}")
+        self._show_panel(self.i18n.t(TKey.PANEL_SKILLS), "\n\n".join(rows))
 
     def _toggle_language(self) -> None:
         new_lang = Language.ZH if self.i18n.language == Language.EN else Language.EN

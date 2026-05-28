@@ -27,6 +27,8 @@ class TKey(StrEnum):
     CMD_INIT_DESC = "cmd.init.desc"
     CMD_MCP = "cmd.mcp"
     CMD_MCP_DESC = "cmd.mcp.desc"
+    CMD_SKILLS = "cmd.skills"
+    CMD_SKILLS_DESC = "cmd.skills.desc"
 
     # ── Reasoning levels ──
     REASONING_LOW = "reasoning.low"
@@ -105,6 +107,8 @@ class TKey(StrEnum):
     PANEL_INIT_BODY = "panel.init.body"
     PANEL_INIT_NO_MODEL = "panel.init.no_model"
     PANEL_INIT_DONE = "panel.init.done"
+    PANEL_SKILLS = "panel.skills"
+    PANEL_SKILLS_EMPTY = "panel.skills.empty"
 
     # ── API form ──
     FORM_DEEPSEEK_KEY = "form.deepseek.key"

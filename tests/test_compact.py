@@ -10,7 +10,7 @@ from flyinchat.compact import (
     CompactionPolicy,
     TokenEstimator,
 )
-from flyinchat.models import LLMModel
+from flyinchat.models import LLMChannel, LLMModel
 from flyinchat.paths import resolve_app_paths
 from flyinchat.storage import (
     add_message,
@@ -249,3 +249,59 @@ def test_compaction_output_dataclass() -> None:
     )
     assert output.applied is False
     assert output.boundary_message is None
+
+
+def test_autocompact_summary_preserves_skill_state(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    async def run():
+        paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+        conv = create_conversation(paths.chat_path, title="Test")
+        add_message(paths.chat_path, conversation_id=conv.id, role="user", content="old")
+        add_message(
+            paths.chat_path,
+            conversation_id=conv.id,
+            role="system",
+            subtype="skill_event",
+            content=json.dumps({
+                "event": "skill.resolve.complete",
+                "applied_skills": ["safe-edit@0.1.0"],
+                "active_phase": "validate",
+                "guards_applied": [{"guard_id": "g1"}],
+            }),
+        )
+        add_message(paths.chat_path, conversation_id=conv.id, role="user", content="new")
+
+        captured: dict[str, str] = {}
+
+        async def fake_chat_completion(channel, model, messages, max_tokens):
+            captured["prompt"] = messages[0]["content"]
+            return "summary"
+
+        monkeypatch.setattr("flyinchat.compact.chat_completion", fake_chat_completion)
+        engine = CompactionEngine(paths.chat_path, conv.id)
+        model = LLMModel(id="m1", channel_id="c1", name="m", is_default=True, context_window=10)
+        channel = LLMChannel(
+            id="c1",
+            name="c",
+            provider_type="anthropic",
+            base_url=None,
+            api_key="sk-test",
+            created_at="",
+            updated_at="",
+        )
+
+        result = await engine._autocompact(
+            list_messages(paths.chat_path, conversation_id=conv.id),
+            [],
+            CompactionPolicy(context_window=10, preserve_turns=1),
+            model,
+            channel,
+            100,
+        )
+
+        assert result.applied is True
+        assert "Skills applied: safe-edit@0.1.0" in captured["prompt"]
+        assert "phase: validate" in captured["prompt"]
+
+    asyncio.run(run())

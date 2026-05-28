@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
+from flyinchat.skills.guards import evaluate_skill_guards, guards_from_turn_state
+
 logger = logging.getLogger("flyinchat.tools")
 
 PERMISSION_REQUIRED = "PERMISSION_REQUIRED"
@@ -169,6 +171,26 @@ class ToolExecutor:
             )
             return result
 
+        skill_gate = evaluate_skill_guards(
+            guards_from_turn_state(context.turn_state), tool_name, tool_input, context
+        )
+        if not skill_gate.allowed:
+            result = ToolResult(
+                ok=False,
+                content=skill_gate.reason,
+                error_code=PERMISSION_REQUIRED if skill_gate.ask_user else "SKILL_GUARD_DENIED",
+            )
+            if skill_gate.guard is not None:
+                result.meta.update({
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "skill_guard_id": skill_gate.guard.guard_id,
+                    "skill_name": skill_gate.guard.skill_name,
+                    "guard_type": skill_gate.guard.guard_type,
+                    "guard_reason": skill_gate.reason,
+                })
+            return result
+
         gate = self._tool_allowed(tool_name, context)
         if not gate.allowed:
             if gate.ask_user:
@@ -211,6 +233,26 @@ class ToolExecutor:
         except KeyError as e:
             result = ToolResult(ok=False, content=str(e), error_code="TOOL_NOT_FOUND")
             self._emit(context, "tool.error", {"tool": tool_name, "error": result.content})
+            return result
+
+        skill_gate = evaluate_skill_guards(
+            guards_from_turn_state(context.turn_state), tool_name, tool_input, context
+        )
+        if not skill_gate.allowed and not skill_gate.ask_user:
+            result = ToolResult(
+                ok=False,
+                content=skill_gate.reason,
+                error_code="SKILL_GUARD_DENIED",
+            )
+            if skill_gate.guard is not None:
+                result.meta.update({
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "skill_guard_id": skill_gate.guard.guard_id,
+                    "skill_name": skill_gate.guard.skill_name,
+                    "guard_type": skill_gate.guard.guard_type,
+                    "guard_reason": skill_gate.reason,
+                })
             return result
 
         try:

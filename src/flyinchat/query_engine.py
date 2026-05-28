@@ -11,7 +11,8 @@ from .api_client import stream_chat_completion
 from .compact import CompactionEngine, CompactionPolicy
 from .message_utils import message_to_api_format, sanitize_api_messages
 from .prompt_assembler import assemble_system_prompt
-from .models import LLMChannel, LLMModel, TurnResult
+from .models import LLMChannel, LLMModel, Message, TurnResult
+from .skills import CompiledSkill, SkillCompiler, SkillRegistry, SkillResolver
 from .paths import AppPaths
 from .storage import (
     add_message_with_turn,
@@ -47,6 +48,7 @@ class QueryEngineConfig:
     max_tool_rounds: int = 10
     max_context_retries: int = 1
     enable_auto_compact: bool = True
+    skill_registry: SkillRegistry | None = None
 
 
 class QueryEngine:
@@ -60,6 +62,8 @@ class QueryEngine:
         self._pending_permissions: dict[str, asyncio.Future[str]] = {}
         self._pending_user_inputs: dict[str, asyncio.Future[dict]] = {}
         self._cancel_event = asyncio.Event()
+        self._skill_resolver = SkillResolver()
+        self._skill_compiler = SkillCompiler()
 
     def request_cancel(self) -> None:
         self._cancel_event.set()
@@ -161,6 +165,7 @@ class QueryEngine:
         active_messages = list_active_messages(
             self.config.paths.chat_path, conversation_id=self.config.conversation_id
         )
+        compiled_skill = self._resolve_turn_skills(turn_id, active_messages)
         api_messages: list[dict] = [
             formatted
             for msg in active_messages
@@ -171,7 +176,11 @@ class QueryEngine:
         # ── Assemble and inject system prompt ──
         compact_text = _extract_compact_summary(api_messages)
         api_messages = [m for m in api_messages if m.get("role") != "system"]
-        system_prompt = assemble_system_prompt(mode=self.mode, compact_summary=compact_text)
+        system_prompt = assemble_system_prompt(
+            mode=self.mode,
+            compact_summary=compact_text,
+            skill_injection=compiled_skill.planning_injection if compiled_skill else None,
+        )
         api_messages.insert(0, {"role": "system", "content": system_prompt})
 
         tool_list = (
@@ -656,6 +665,70 @@ class QueryEngine:
             output_tokens=total_output_tokens,
         )
 
+    def _resolve_turn_skills(
+        self,
+        turn_id: str,
+        active_messages: list[Message],
+    ) -> CompiledSkill | None:
+        registry = self.config.skill_registry
+        if registry is None:
+            if self._tool_context is not None:
+                self._tool_context.turn_state = {
+                    key: value
+                    for key, value in self._tool_context.turn_state.items()
+                    if key not in {"runtime_guards", "skill_runtime_state"}
+                }
+            return None
+
+        query = _latest_user_content(active_messages)
+        catalog = registry.refresh()
+        decision = self._skill_resolver.resolve(query, catalog)
+        compiled = self._skill_compiler.compile(decision)
+        if self._tool_context is not None:
+            self._tool_context.turn_state = {
+                **self._tool_context.turn_state,
+                "runtime_guards": compiled.runtime_guards,
+                "skill_runtime_state": compiled.runtime_state,
+            }
+        self._write_skill_transcript(turn_id, decision, compiled)
+        return compiled if decision.selected else None
+
+    def _write_skill_transcript(
+        self,
+        turn_id: str,
+        decision: Any,
+        compiled: CompiledSkill,
+    ) -> None:
+        content = json.dumps({
+            "event": "skill.resolve.complete",
+            "applied_skills": list(decision.applied_refs),
+            "rejected": [
+                {"name": item.name, "reason": item.reason, "score": item.score}
+                for item in decision.rejected
+            ],
+            "confidence": decision.confidence,
+            "skill_decision_reason": decision.reason,
+            "active_phase": compiled.runtime_state.active_phase,
+            "guards_applied": [
+                {
+                    "guard_id": guard.guard_id,
+                    "skill_name": guard.skill_name,
+                    "guard_type": guard.guard_type,
+                    "action": guard.action,
+                    "reason": guard.reason,
+                }
+                for guard in compiled.runtime_guards
+            ],
+        }, ensure_ascii=False)
+        add_message_with_turn(
+            self.config.paths.chat_path,
+            conversation_id=self.config.conversation_id,
+            turn_id=turn_id,
+            role="system",
+            subtype="skill_event",
+            content=content,
+        )
+
     async def _execute_tool(
         self,
         turn_id: str,
@@ -942,6 +1015,10 @@ class QueryEngine:
                 "error_code": result.error_code,
                 "elapsed_ms": result.meta.get("elapsed_ms", 0),
                 "data": result.data,
+                "skill_guard_id": result.meta.get("skill_guard_id"),
+                "skill_name": result.meta.get("skill_name"),
+                "guard_type": result.meta.get("guard_type"),
+                "guard_reason": result.meta.get("guard_reason"),
             }),
         )
 
@@ -1010,6 +1087,13 @@ class QueryEngine:
             "last_input_tokens": conv.last_input_tokens,
             "status": conv.status,
         }
+
+
+def _latest_user_content(messages: list[Message]) -> str:
+    for msg in reversed(messages):
+        if msg.role == "user":
+            return msg.content
+    return ""
 
 
 def _extract_compact_summary(api_messages: list[dict]) -> str | None:

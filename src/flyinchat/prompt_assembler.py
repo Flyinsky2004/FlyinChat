@@ -63,16 +63,18 @@ _MODE_SECTIONS: dict[str, str] = {
 def assemble_system_prompt(
     mode: str = "normal",
     compact_summary: str | None = None,
+    skill_injection: str | None = None,
 ) -> str:
     """Build the full system prompt for the current request.
 
     Sections are assembled in fixed order:
-      BASE_SYSTEM → mode section → SAFETY_POLICY → compact summary (optional)
+      BASE_SYSTEM → mode section → SAFETY_POLICY → skills → compact summary
 
     Args:
         mode: One of normal, plan, auto_edit, yolo.
         compact_summary: Historical conversation summary from the compaction
                          engine, if one exists.
+        skill_injection: Compiled planning guidance from selected Skills.
 
     Returns:
         Assembled system prompt string ready to pass to the API.
@@ -83,6 +85,8 @@ def assemble_system_prompt(
         mode_section.strip(),
         SAFETY_POLICY.strip(),
     ]
+    if skill_injection:
+        sections.append(f"Skill planning guidance:\n{skill_injection.strip()}")
     if compact_summary:
         sections.append(
             f"Historical summary (compacted conversation):\n{compact_summary.strip()}"

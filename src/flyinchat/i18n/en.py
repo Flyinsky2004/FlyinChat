@@ -26,6 +26,8 @@ EN: dict[TKey, str] = {
     TKey.CMD_INIT_DESC: "Generate/update FLYINCHAT.md project memory file",
     TKey.CMD_MCP: "/mcp",
     TKey.CMD_MCP_DESC: "View MCP server status and tool list",
+    TKey.CMD_SKILLS: "/skills",
+    TKey.CMD_SKILLS_DESC: "View loaded Agent Skills",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "Fast, minimal reasoning",
@@ -104,6 +106,8 @@ EN: dict[TKey, str] = {
     TKey.PANEL_INIT_BODY: "Exploring project structure and generating FLYINCHAT.md...",
     TKey.PANEL_INIT_NO_MODEL: "No primary model configured. Please add one with /api first, then select it with /model.",
     TKey.PANEL_INIT_DONE: "FLYINCHAT.md has been generated in the workspace root.",
+    TKey.PANEL_SKILLS: "Agent Skills",
+    TKey.PANEL_SKILLS_EMPTY: "No skills loaded. Add SKILL.md files under `skills/**/SKILL.md` in the workspace or `~/.flyinchat/skills`.",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API key",

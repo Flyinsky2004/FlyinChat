@@ -716,3 +716,43 @@ def test_init_creates_conversation_and_submits_prompt(tmp_path: Path) -> None:
                 assert "FLYINCHAT.md generated" in message_view._markdown
 
     asyncio.run(run_app())
+
+
+def test_skills_command_shows_loaded_skills(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        skill_path = tmp_path / "project" / "skills" / "safe-edit" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text(
+            """---
+name: safe-edit
+description: Use when editing files
+version: 1.0.0
+category: software-development
+metadata:
+  tags: [edit, files]
+---
+
+# Safe Edit
+
+## Workflow
+Read before editing.
+""",
+            encoding="utf-8",
+        )
+        app = FlyinChatApp(paths=paths)
+
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", Input)
+            prompt_input.value = "/skills"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            message_view = app.query_one("#message-view", Markdown)
+            raw = message_view._markdown
+            assert "Agent Skills" in raw
+            assert "safe-edit@1.0.0" in raw
+            assert "Use when editing files" in raw
+            assert "edit, files" in raw
+
+    asyncio.run(run_app())

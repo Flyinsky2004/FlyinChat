@@ -26,6 +26,8 @@ ZH: dict[TKey, str] = {
     TKey.CMD_INIT_DESC: "生成/更新 FLYINCHAT.md 项目记忆文件",
     TKey.CMD_MCP: "/mcp",
     TKey.CMD_MCP_DESC: "查看 MCP 服务器状态与工具列表",
+    TKey.CMD_SKILLS: "/skills",
+    TKey.CMD_SKILLS_DESC: "查看已加载的 Agent Skills",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "快速，最少推理",
@@ -104,6 +106,8 @@ ZH: dict[TKey, str] = {
     TKey.PANEL_INIT_BODY: "正在探索项目结构并生成 FLYINCHAT.md...",
     TKey.PANEL_INIT_NO_MODEL: "未配置主模型。请先使用 /api 添加模型，再使用 /model 选择。",
     TKey.PANEL_INIT_DONE: "FLYINCHAT.md 已生成到工作区根目录。",
+    TKey.PANEL_SKILLS: "Agent Skills",
+    TKey.PANEL_SKILLS_EMPTY: "未加载任何 skill。请在工作区 `skills/**/SKILL.md` 或 `~/.flyinchat/skills` 下添加 SKILL.md 文件。",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API 密钥",

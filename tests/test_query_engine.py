@@ -8,6 +8,7 @@ import pytest
 from flyinchat.models import LLMChannel, LLMModel
 from flyinchat.paths import AppPaths, resolve_app_paths
 from flyinchat.query_engine import QueryEngine, QueryEngineConfig, TurnEvent
+from flyinchat.skills import SkillRegistry
 from flyinchat.storage import (
     add_message,
     create_conversation,
@@ -400,5 +401,64 @@ class TestQueryEngineBasic:
                 result, _ = await _collect_events(engine, "loop forever")
                 assert result.status == "max_rounds"
                 assert result.tool_rounds == 3
+
+        asyncio.run(run())
+
+
+class TestQueryEngineSkills:
+    def test_skill_injection_and_event_are_persisted(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            skill_path = paths.project_dir.parent / "skills" / "safe-edit" / "SKILL.md"
+            skill_path.parent.mkdir(parents=True, exist_ok=True)
+            skill_path.write_text(
+                """---
+name: safe-edit
+description: Use when editing files
+metadata:
+  tags: [edit]
+---
+
+# Safe Edit
+
+## Workflow
+Read before editing.
+
+## Verification Checklist
+Run tests.
+""",
+                encoding="utf-8",
+            )
+            registry = SkillRegistry(paths.project_dir.parent, tmp_path / "user")
+            conv = create_conversation(paths.chat_path, title="test")
+            engine = QueryEngine(QueryEngineConfig(paths=paths, conversation_id=conv.id, skill_registry=registry))
+            registry_tools = ToolRegistry()
+            registry_tools.register(FileReadTool())
+            executor = ToolExecutor(registry_tools)
+            engine.configure_tools(registry_tools, executor, _make_tool_context(paths.project_dir.parent))
+            seen_system_prompts: list[str] = []
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                seen_system_prompts.append(messages[0]["content"])
+                yield {"type": "text", "content": "done"}
+                return
+
+            with (
+                patch("flyinchat.query_engine.stream_chat_completion", side_effect=mock_stream),
+                patch("flyinchat.query_engine.CompactionEngine.compact_if_needed_async", new_callable=AsyncMock) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "please edit this file")
+
+            assert result.status == "completed"
+            assert "safe-edit@0.1.0" in seen_system_prompts[0]
+            messages = list_messages(paths.chat_path, conversation_id=conv.id)
+            skill_event = next(msg for msg in messages if msg.subtype == "skill_event")
+            payload = json.loads(skill_event.content)
+            assert payload["applied_skills"] == ["safe-edit@0.1.0"]
 
         asyncio.run(run())

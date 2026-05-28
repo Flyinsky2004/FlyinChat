@@ -350,6 +350,13 @@ class CompactionEngine:
                         elif block.get("type") == "text":
                             text_parts.append(block["text"])
                     history_parts.append(f"{role_label}: {' '.join(text_parts)}")
+                elif isinstance(parsed, dict) and parsed.get("event") == "skill.resolve.complete":
+                    applied = ", ".join(parsed.get("applied_skills", [])) or "none"
+                    phase = parsed.get("active_phase", "")
+                    guards = parsed.get("guards_applied", [])
+                    history_parts.append(
+                        f"{role_label}: [Skills applied: {applied}; phase: {phase}; guards: {len(guards)}]"
+                    )
                 elif isinstance(parsed, dict) and "tool_use_id" in parsed:
                     content = str(parsed.get("content", ""))
                     preview = content[:500] + "..." if len(content) > 500 else content
