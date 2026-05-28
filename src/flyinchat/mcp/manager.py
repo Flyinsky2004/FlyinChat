@@ -19,6 +19,8 @@ class MCPManager:
         self._clients: dict[str, Any] = {}
         self._exit_stacks: dict[str, Any] = {}
         self._status: dict[str, str] = {}
+        self._errors: dict[str, str] = {}
+        self._server_configs: dict[str, MCPServerConfig] = {}
 
     async def connect_all(
         self,
@@ -27,6 +29,8 @@ class MCPManager:
         tool_context: Any,
     ) -> None:
         """Connect to all configured MCP servers and register their tools."""
+        for server in servers:
+            self._server_configs[server.name] = server
         if not servers:
             logger.info("No MCP servers configured")
             return
@@ -49,6 +53,7 @@ class MCPManager:
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
         self._status[server.name] = "connecting"
+        self._server_configs[server.name] = server
         logger.info("Connecting to MCP server: %s", server.name)
 
         exit_stack = AsyncExitStack()
@@ -96,20 +101,58 @@ class MCPManager:
             self._sessions[server.name] = session
             self._clients[server.name] = stdio_transport
             self._status[server.name] = "connected"
+            self._errors.pop(server.name, None)
             logger.info(
                 "MCP server %s connected: %d tools registered",
                 server.name,
                 tool_count,
             )
 
-        except Exception:
+        except Exception as e:
             await exit_stack.aclose()
             self._status[server.name] = "error"
+            self._errors[server.name] = str(e)
+            logger.exception("Failed to connect to MCP server: %s", server.name)
             raise
 
     def get_status(self) -> dict[str, str]:
         """Return connection status for all configured servers."""
         return dict(self._status)
+
+    def get_error(self, server_name: str) -> str | None:
+        """Return error message for a server, or None if no error."""
+        return self._errors.get(server_name)
+
+    def get_server_config(self, server_name: str) -> MCPServerConfig | None:
+        """Return server config by name."""
+        return self._server_configs.get(server_name)
+
+    async def reconnect_server(
+        self,
+        server: MCPServerConfig,
+        registry: Any,
+        tool_context: Any,
+    ) -> int:
+        """Disconnect and reconnect a single server, return tool count."""
+        await self._disconnect_one(server.name)
+        await self._connect_server(server, registry, tool_context)
+        return sum(
+            1 for tn in registry.list_tools() if tn.startswith(f"mcp_{server.name}_")
+        )
+
+    async def _disconnect_one(self, server_name: str) -> None:
+        """Disconnect a single server."""
+        exit_stack = self._exit_stacks.pop(server_name, None)
+        if exit_stack is not None:
+            try:
+                await asyncio.wait_for(exit_stack.aclose(), timeout=5.0)
+            except Exception:
+                pass
+        self._sessions.pop(server_name, None)
+        self._clients.pop(server_name, None)
+        self._status.pop(server_name, None)
+        self._errors.pop(server_name, None)
+        logger.info("MCP server disconnected: %s", server_name)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all MCP connections."""
@@ -121,6 +164,7 @@ class MCPManager:
                 self._sessions.pop(name, None)
                 self._clients.pop(name, None)
                 self._status[name] = "disconnected"
+                self._errors.pop(name, None)
                 logger.info("MCP server disconnected: %s", name)
             except asyncio.TimeoutError:
                 logger.warning("MCP shutdown timed out for server: %s", name)

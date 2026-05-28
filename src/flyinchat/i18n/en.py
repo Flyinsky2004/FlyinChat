@@ -148,6 +148,11 @@ EN: dict[TKey, str] = {
     TKey.PANEL_MCP_STATUS_ERROR: "Connection error",
     TKey.PANEL_MCP_STATUS_CONNECTING: "Connecting",
     TKey.PANEL_MCP_STATUS_DISCONNECTED: "Disconnected",
+    TKey.PANEL_MCP_RECONNECT: "Reconnect",
+    TKey.PANEL_MCP_RECONNECTING: "Reconnecting {name}...",
+    TKey.PANEL_MCP_RECONNECT_OK: "Reconnected successfully, {count} tools registered",
+    TKey.PANEL_MCP_BACK: "Back",
+    TKey.PANEL_MCP_ACTION_TITLE: "MCP Action",
 
     # ── Status bar ──
     TKey.STATUS_WORKING: "Working",

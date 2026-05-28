@@ -133,6 +133,7 @@ class FlyinChatApp(App[None]):
         self._active_mention_span: MentionSpan | None = None
         self._mode: int = 0  # 0=normal, 1=auto_edit, 2=yolo, 3=plan
         self._mcp_manager: MCPManager | None = None
+        self._pending_mcp_action_server: str | None = None
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
         t = self.i18n.t
@@ -893,15 +894,22 @@ class FlyinChatApp(App[None]):
             env_str = ", ".join(f"{k}={v}" for k, v in server.env.items())
             lines.append(f"**Env:** {env_str}")
         lines.append(f"**Timeout:** {server.timeout_seconds}s")
+        if status == "error" and self._mcp_manager:
+            err = self._mcp_manager.get_error(server_name)
+            if err:
+                lines.append("")
+                lines.append(f"**Error:** ```{err}```")
 
+        tool_count = 0
         if self._tool_registry:
             mcp_tools = [
                 tn for tn in self._tool_registry.list_tools()
                 if tn.startswith(f"mcp_{server_name}_")
             ]
+            tool_count = len(mcp_tools)
             if mcp_tools:
                 lines.append("")
-                lines.append(f"**Tools ({len(mcp_tools)}):**")
+                lines.append(f"**Tools ({tool_count}):**")
                 for tool_name in sorted(mcp_tools):
                     tool = self._tool_registry.get(tool_name)
                     lines.append(f"  - `{tool_name}` — {tool.description[:60]}")
@@ -909,7 +917,47 @@ class FlyinChatApp(App[None]):
                 lines.append("")
                 lines.append("**Tools:** None registered")
 
+        lines.append("")
+        lines.append(f"---")
+        lines.append(f"*按 **Enter** 查看选项*")
+
         self._show_panel(t(TKey.PANEL_MCP_DETAIL), "\n".join(lines))
+        self._pending_mcp_action_server = server_name
+        self._set_selection(
+            context="mcp_action",
+            title=t(TKey.PANEL_MCP_ACTION_TITLE),
+            items=(
+                SelectionItem("reconnect", t(TKey.PANEL_MCP_RECONNECT), f"Reconnect {server_name}"),
+                SelectionItem("back", t(TKey.PANEL_MCP_BACK), "Back to MCP list"),
+            ),
+        )
+        command_menu = self.query_one("#command-menu", Static)
+        command_menu.update("")
+        command_menu.display = False
+        self.call_later(self._render_selection)
+
+    @work
+    async def _mcp_reconnect(self, server_name: str) -> None:
+        """Reconnect a single MCP server."""
+        if self._mcp_manager is None or self.paths is None:
+            return
+        server = self._mcp_manager.get_server_config(server_name)
+        if server is None:
+            return
+        t = self.i18n.t
+        self._clear_selection()
+        self._show_panel(t(TKey.PANEL_MCP_DETAIL), t(TKey.PANEL_MCP_RECONNECTING, name=server_name))
+        try:
+            tool_count = await self._mcp_manager.reconnect_server(
+                server, self._tool_registry, self._tool_context
+            )
+            self._show_panel(
+                t(TKey.PANEL_MCP_DETAIL),
+                t(TKey.PANEL_MCP_RECONNECT_OK, count=tool_count),
+            )
+        except Exception:
+            self._show_panel(t(TKey.PANEL_MCP_DETAIL), f"Reconnect failed for {server_name}")
+        self.call_later(self._render_status_bar)
 
     def _show_command_menu(self, query: str) -> None:
         command_menu = self.query_one("#command-menu", Static)
@@ -1007,6 +1055,11 @@ class FlyinChatApp(App[None]):
                 self._resolve_pending_permission(item.key)
             case "mcp_select":
                 self._show_mcp_detail(item.key)
+            case "mcp_action":
+                if item.key == "reconnect":
+                    self._mcp_reconnect(self._pending_mcp_action_server or "")
+                elif item.key == "back":
+                    self._show_mcp_servers()
 
     def _insert_selected_file_mention(self) -> None:
         if not self.selection_items:
@@ -1867,7 +1920,7 @@ class FlyinChatApp(App[None]):
             rows.append(self.selection_footer)
 
         content = "\n".join(rows)
-        if target_menu or self.selection_context in ("main", "file_mention", "permission_request"):
+        if target_menu or self.selection_context in ("main", "file_mention", "permission_request", "mcp_action"):
             command_menu = self.query_one("#command-menu", Static)
             command_menu.update(content)
             command_menu.display = True

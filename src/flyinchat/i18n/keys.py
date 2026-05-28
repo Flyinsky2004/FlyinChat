@@ -149,6 +149,11 @@ class TKey(StrEnum):
     PANEL_MCP_STATUS_ERROR = "panel.mcp.status.error"
     PANEL_MCP_STATUS_CONNECTING = "panel.mcp.status.connecting"
     PANEL_MCP_STATUS_DISCONNECTED = "panel.mcp.status.disconnected"
+    PANEL_MCP_RECONNECT = "panel.mcp.reconnect"
+    PANEL_MCP_RECONNECTING = "panel.mcp.reconnecting"
+    PANEL_MCP_RECONNECT_OK = "panel.mcp.reconnect.ok"
+    PANEL_MCP_BACK = "panel.mcp.back"
+    PANEL_MCP_ACTION_TITLE = "panel.mcp.action.title"
 
     # ── Status bar ──
     STATUS_WORKING = "status.working"

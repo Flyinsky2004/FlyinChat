@@ -148,6 +148,11 @@ ZH: dict[TKey, str] = {
     TKey.PANEL_MCP_STATUS_ERROR: "连接错误",
     TKey.PANEL_MCP_STATUS_CONNECTING: "连接中",
     TKey.PANEL_MCP_STATUS_DISCONNECTED: "已断开",
+    TKey.PANEL_MCP_RECONNECT: "重新连接",
+    TKey.PANEL_MCP_RECONNECTING: "正在重新连接 {name}...",
+    TKey.PANEL_MCP_RECONNECT_OK: "重新连接成功，{count} 个工具已注册",
+    TKey.PANEL_MCP_BACK: "返回",
+    TKey.PANEL_MCP_ACTION_TITLE: "MCP 操作",
 
     # ── Status bar ──
     TKey.STATUS_WORKING: "正在处理",
