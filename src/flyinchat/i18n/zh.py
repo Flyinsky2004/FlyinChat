@@ -195,6 +195,10 @@ ZH: dict[TKey, str] = {
     TKey.RISK_MEDIUM: "中",
     TKey.RISK_HIGH: "高",
 
+    # ── Todo panel ──
+    TKey.TODO_TITLE: "计划",
+    TKey.TODO_EMPTY: "暂无计划",
+
     # ── Misc ──
     TKey.MISC_NO_MESSAGES: "_暂无消息_",
     TKey.MISC_NO_PROVIDERS: "尚未配置提供商。",

@@ -196,6 +196,10 @@ class TKey(StrEnum):
     RISK_MEDIUM = "risk.medium"
     RISK_HIGH = "risk.high"
 
+    # ── Todo panel ──
+    TODO_TITLE = "todo.title"
+    TODO_EMPTY = "todo.empty"
+
     # ── Misc ──
     MISC_NO_MESSAGES = "misc.no_messages"
     MISC_NO_PROVIDERS = "misc.no_providers"

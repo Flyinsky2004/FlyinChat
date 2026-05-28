@@ -138,6 +138,7 @@ class FlyinChatApp(App[None]):
         self._mcp_manager: MCPManager | None = None
         self._skill_registry: SkillRegistry | None = None
         self._pending_mcp_action_server: str | None = None
+        self._todos: list[dict] = []
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
         t = self.i18n.t
@@ -231,6 +232,22 @@ class FlyinChatApp(App[None]):
         border-top: solid #1f2a3d;
     }
 
+    #todo-panel {
+        height: auto;
+        max-height: 10;
+        margin-bottom: 1;
+        padding: 1 2;
+        background: #101827;
+        color: #d7dde8;
+        border: round #2d4a3e;
+        display: none;
+    }
+
+    #todo-panel .todo-title {
+        color: #4ade80;
+        text-style: bold;
+    }
+
     #command-menu {
         display: none;
         margin-bottom: 1;
@@ -283,6 +300,7 @@ class FlyinChatApp(App[None]):
                 yield Static(t(TKey.EMPTY_HINT), id="empty-hint")
             yield Markdown("", id="message-view")
         with Vertical(id="composer"):
+            yield Static("", id="todo-panel")
             yield Static("", id="command-menu")
             yield Static(t(TKey.LABEL_MESSAGE), id="input-label")
             yield Input(placeholder=t(TKey.PLACEHOLDER_INPUT), id="prompt-input")
@@ -417,7 +435,9 @@ class FlyinChatApp(App[None]):
                 self._streaming_assistant_text = ""
                 self._last_stream_render_at = 0.0
                 self._streaming_output_tokens = 0
+                self._todos = []
                 self.query_one("#empty-state", Vertical).display = False
+                self._render_todo_panel()
             case "thinking":
                 pass
             case "text":
@@ -428,7 +448,8 @@ class FlyinChatApp(App[None]):
             case "tool_use":
                 pass
             case "tool_result":
-                pass
+                if event.data.get("name") == "todo_write":
+                    self._refresh_todos_from_context()
             case "skill_resolved":
                 self._render_history()
                 self._render_status_bar()
@@ -2131,6 +2152,45 @@ class FlyinChatApp(App[None]):
             p.denied_tools = {"file_write", "file_edit"}
         if self._query_engine is not None:
             self._query_engine.mode = mode_int_to_str(self._mode)
+
+    def _refresh_todos_from_context(self) -> None:
+        if self._tool_context is None:
+            return
+        todos = self._tool_context.turn_state.get("todos")
+        if not todos:
+            return
+        self._todos = list(todos)
+        self._render_todo_panel()
+
+    def _render_todo_panel(self) -> None:
+        t = self.i18n.t
+        panel = self.query_one("#todo-panel", Static)
+        if not self._todos:
+            panel.display = False
+            return
+
+        markers = {"completed": "[green]✓[/]", "in_progress": "[yellow]▸[/]", "pending": "[#555566]○[/]"}
+        lines: list[str] = []
+        for i, item in enumerate(self._todos):
+            status = item.get("status", "pending")
+            content = item.get("content", "")
+            marker = markers.get(status, "○")
+            lines.append(f"{marker} {content}")
+
+        summary_parts = []
+        done = sum(1 for t in self._todos if t.get("status") == "completed")
+        active = sum(1 for t in self._todos if t.get("status") == "in_progress")
+        if done:
+            summary_parts.append(f"{done} done")
+        if active:
+            summary_parts.append(f"{active} active")
+        pending = len(self._todos) - done - active
+        if pending:
+            summary_parts.append(f"{pending} pending")
+        summary = " · ".join(summary_parts)
+
+        panel.update(f"[bold green]{t(TKey.TODO_TITLE)}[/]  {summary}\n" + "\n".join(lines))
+        panel.display = True
 
     def _render_status_bar(self) -> None:
         if self.paths is None:

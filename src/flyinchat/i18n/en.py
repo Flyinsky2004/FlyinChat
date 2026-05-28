@@ -195,6 +195,10 @@ EN: dict[TKey, str] = {
     TKey.RISK_MEDIUM: "MEDIUM",
     TKey.RISK_HIGH: "HIGH",
 
+    # ── Todo panel ──
+    TKey.TODO_TITLE: "Plan",
+    TKey.TODO_EMPTY: "No active plan",
+
     # ── Misc ──
     TKey.MISC_NO_MESSAGES: "_No messages_",
     TKey.MISC_NO_PROVIDERS: "No providers configured yet.",
