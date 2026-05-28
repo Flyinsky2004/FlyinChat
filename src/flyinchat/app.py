@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shlex
 import time
@@ -297,8 +298,11 @@ class FlyinChatApp(App[None]):
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
         self._render_status_bar()
+        self._init_mcp_servers()
 
     async def action_quit(self) -> None:
+        if hasattr(self, "_mcp_shutdown_event") and self._mcp_shutdown_event is not None:
+            self._mcp_shutdown_event.set()
         if self._mcp_manager is not None:
             await self._mcp_manager.shutdown()
         await super().action_quit()
@@ -341,7 +345,6 @@ class FlyinChatApp(App[None]):
             self._query_engine.configure_tools(
                 self._tool_registry, self._tool_executor, self._tool_context
             )
-        self._init_mcp_servers()
 
     @work(exclusive=True)
     async def _init_mcp_servers(self) -> None:
@@ -357,6 +360,12 @@ class FlyinChatApp(App[None]):
                 self._tool_context,
             )
         self.call_later(self._render_status_bar)
+        # Keep the worker alive so anyio cancel scopes stay valid (Python 3.14 compat)
+        self._mcp_shutdown_event = asyncio.Event()
+        try:
+            await self._mcp_shutdown_event.wait()
+        except asyncio.CancelledError:
+            pass
 
     def _ensure_query_engine(self) -> QueryEngine:
         if self._query_engine is None and self.paths is not None and self.active_conversation_id is not None:
@@ -894,11 +903,10 @@ class FlyinChatApp(App[None]):
             env_str = ", ".join(f"{k}={v}" for k, v in server.env.items())
             lines.append(f"**Env:** {env_str}")
         lines.append(f"**Timeout:** {server.timeout_seconds}s")
-        if status == "error" and self._mcp_manager:
-            err = self._mcp_manager.get_error(server_name)
-            if err:
-                lines.append("")
-                lines.append(f"**Error:** ```{err}```")
+        err_msg = self._mcp_manager.get_error(server_name) if self._mcp_manager else None
+        if err_msg:
+            lines.append("")
+            lines.append(f"**Error:** ```{err_msg}```")
 
         tool_count = 0
         if self._tool_registry:
@@ -2134,7 +2142,11 @@ class FlyinChatApp(App[None]):
             if mcp_status:
                 connected = sum(1 for s in mcp_status.values() if s == "connected")
                 total = len(mcp_status)
-                parts.append(f"MCP: {connected}/{total}")
+                errors = sum(1 for s in mcp_status.values() if s == "error")
+                if errors > 0:
+                    parts.append(f"MCP: {connected}/{total} [red]{errors} err[/]")
+                else:
+                    parts.append(f"MCP: {connected}/{total}")
 
         _update("  |  ".join(parts))
 

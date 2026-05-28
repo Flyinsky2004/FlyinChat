@@ -49,12 +49,21 @@ class MCPManager:
         tool_context: Any,
     ) -> None:
         """Connect to a single MCP server and register its tools."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        try:
+            from mcp import ClientSession
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+        except ModuleNotFoundError as e:
+            self._status[server.name] = "error"
+            self._errors[server.name] = (
+                f"mcp package not installed: {e}. "
+                "Install it with: pip install mcp"
+            )
+            logger.error("mcp package not installed; cannot connect MCP server")
+            raise
 
         self._status[server.name] = "connecting"
         self._server_configs[server.name] = server
-        logger.info("Connecting to MCP server: %s", server.name)
+        logger.info("Connecting to MCP server: %s (cmd=%s, args=%s)", server.name, server.command, server.args)
 
         exit_stack = AsyncExitStack()
         self._exit_stacks[server.name] = exit_stack
@@ -109,10 +118,13 @@ class MCPManager:
             )
 
         except Exception as e:
-            await exit_stack.aclose()
             self._status[server.name] = "error"
             self._errors[server.name] = str(e)
             logger.exception("Failed to connect to MCP server: %s", server.name)
+            try:
+                await exit_stack.aclose()
+            except (RuntimeError, Exception):
+                pass
             raise
 
     def get_status(self) -> dict[str, str]:
@@ -134,14 +146,19 @@ class MCPManager:
         tool_context: Any,
     ) -> int:
         """Disconnect and reconnect a single server, return tool count."""
-        await self._disconnect_one(server.name)
+        await self._disconnect_one(server.name, registry=registry)
         await self._connect_server(server, registry, tool_context)
         return sum(
             1 for tn in registry.list_tools() if tn.startswith(f"mcp_{server.name}_")
         )
 
-    async def _disconnect_one(self, server_name: str) -> None:
-        """Disconnect a single server."""
+    async def _disconnect_one(self, server_name: str, registry: Any = None) -> None:
+        """Disconnect a single server, optionally unregistering its tools."""
+        if registry is not None:
+            prefix = f"mcp_{server_name}_"
+            for tool_name in list(registry.list_tools()):
+                if tool_name.startswith(prefix):
+                    registry.unregister(tool_name)
         exit_stack = self._exit_stacks.pop(server_name, None)
         if exit_stack is not None:
             try:

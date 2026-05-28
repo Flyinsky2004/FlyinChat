@@ -87,6 +87,9 @@ class ToolRegistry:
             raise ValueError(f"duplicate tool: {tool.name}")
         self._tools[tool.name] = tool
 
+    def unregister(self, tool_name: str) -> None:
+        self._tools.pop(tool_name, None)
+
     def get(self, name: str) -> Tool:
         if name not in self._tools:
             raise KeyError(f"tool not found: {name}")
