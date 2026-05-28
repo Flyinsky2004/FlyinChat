@@ -46,9 +46,13 @@ class QueryEngineConfig:
     paths: AppPaths
     conversation_id: str
     max_tool_rounds: int = 10
+    max_turns: int | None = None
     max_context_retries: int = 1
     enable_auto_compact: bool = True
     skill_registry: SkillRegistry | None = None
+    enable_auto_continue: bool = True
+    max_auto_continues: int = 3
+    auto_continue_turns: int = 10
 
 
 class QueryEngine:
@@ -148,6 +152,10 @@ class QueryEngine:
                 "turn_id": turn_id,
                 "status": result.status,
                 "tool_rounds": result.tool_rounds,
+                "num_turns": result.num_turns,
+                "max_turns": result.max_turns,
+                "terminal_reason": result.terminal_reason,
+                "last_tool_error": result.last_tool_error,
                 "elapsed_ms": elapsed_ms,
                 "input_tokens": result.input_tokens,
                 "output_tokens": result.output_tokens,
@@ -237,16 +245,92 @@ class QueryEngine:
                 ),
             )
 
-        max_rounds = self.config.max_tool_rounds
+        base_max_turns = max(1, self.config.max_turns or self.config.max_tool_rounds)
+        current_max_turns = base_max_turns
         compact_retry_remaining = self.config.max_context_retries
         total_input_tokens = 0
         total_output_tokens = 0
+        num_turns = 0
+        tool_rounds = 0
         auto_continue_count = 0
-        max_auto_continues = 3
+        incomplete_continue_count = 0
+        max_incomplete_continues = 3
+        pending_tool_results = False
+        finalization_pass = False
+        last_tool_error: str | None = None
 
-        for round_num in range(max_rounds):
+        def assistant_blocks(thinking_blocks: list[dict], text_content: str) -> list[dict]:
+            blocks = [
+                {
+                    "type": "thinking",
+                    "thinking": th["thinking"],
+                    "signature": th.get("signature", ""),
+                }
+                for th in thinking_blocks
+            ]
+            if text_content:
+                blocks.append({"type": "text", "text": text_content})
+            return blocks
+
+        def persist_normal_message(thinking_blocks: list[dict], text_content: str) -> None:
+            if not thinking_blocks and not text_content:
+                return
+            content = (
+                json.dumps(assistant_blocks(thinking_blocks, text_content))
+                if thinking_blocks
+                else text_content
+            )
+            add_message_with_turn(
+                self.config.paths.chat_path,
+                conversation_id=self.config.conversation_id,
+                turn_id=turn_id,
+                role="assistant",
+                subtype="normal",
+                content=content,
+            )
+
+        async def finish(
+            status: str,
+            terminal_reason: str,
+            *,
+            final_text: str = "",
+            error: str | None = None,
+            cancelled: bool = False,
+        ) -> TurnResult:
+            data = {
+                "status": status,
+                "terminal_reason": terminal_reason,
+                "final_text": final_text,
+                "tool_rounds": tool_rounds,
+                "num_turns": num_turns,
+                "base_max_turns": base_max_turns,
+                "max_turns": current_max_turns,
+                "current_max_turns": current_max_turns,
+                "auto_continue_count": auto_continue_count,
+                "last_tool_error": last_tool_error,
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+            }
+            if cancelled:
+                data["cancelled"] = True
+            await self._emit(on_event, TurnEvent(turn_id, "turn_end", data))
+            return TurnResult(
+                turn_id=turn_id,
+                status=status,
+                final_text=final_text,
+                tool_rounds=tool_rounds,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+                error=error,
+                num_turns=num_turns,
+                max_turns=current_max_turns,
+                terminal_reason=terminal_reason,
+                last_tool_error=last_tool_error,
+            )
+
+        while True:
             if self._cancel_event.is_set():
-                if round_num == 0:
+                if num_turns == 0:
                     add_message_with_turn(
                         self.config.paths.chat_path,
                         conversation_id=self.config.conversation_id,
@@ -255,27 +339,92 @@ class QueryEngine:
                         subtype="interrupted",
                         content="[Interrupted]",
                     )
-                await self._emit(
-                    on_event,
-                    TurnEvent(turn_id, "turn_end", {"cancelled": True}),
+                return await finish("cancelled", "cancelled", cancelled=True)
+
+            if num_turns >= current_max_turns:
+                can_auto_continue = (
+                    self.config.enable_auto_continue
+                    and auto_continue_count < self.config.max_auto_continues
+                    and not self._pending_permissions
+                    and not self._pending_user_inputs
+                    and not self._cancel_event.is_set()
                 )
-                return TurnResult(
-                    turn_id=turn_id,
-                    status="cancelled",
-                    tool_rounds=round_num,
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                )
+                if can_auto_continue:
+                    auto_continue_count += 1
+                    additional_turns = max(1, self.config.auto_continue_turns)
+                    current_max_turns += additional_turns
+                    api_messages.append({
+                        "role": "user",
+                        "content": (
+                            "Continue the user's original task from the latest tool results. "
+                            "Do not repeat completed work. If you have enough information, "
+                            "provide the final answer. Use more tools only when necessary and "
+                            "continue to follow the existing permission requirements."
+                        ),
+                    })
+                    logger.info(
+                        "auto-continuing after turn budget reached",
+                        extra={
+                            "turn_id": turn_id,
+                            "num_turns": num_turns,
+                            "base_max_turns": base_max_turns,
+                            "max_turns": current_max_turns,
+                            "current_max_turns": current_max_turns,
+                            "auto_continue_count": auto_continue_count,
+                        },
+                    )
+                    await self._emit(
+                        on_event,
+                        TurnEvent(
+                            turn_id,
+                            "auto_continue",
+                            {
+                                "count": auto_continue_count,
+                                "additional_turns": additional_turns,
+                                "num_turns": num_turns,
+                                "base_max_turns": base_max_turns,
+                                "max_turns": current_max_turns,
+                                "current_max_turns": current_max_turns,
+                            },
+                        ),
+                    )
+                    continue
+
+                if pending_tool_results and not finalization_pass:
+                    finalization_pass = True
+                    api_messages.append({
+                        "role": "user",
+                        "content": (
+                            "The automatic turn budget is exhausted. Do not call tools. "
+                            "Summarize what has been completed, explain the latest tool result, "
+                            "name any blocker, and list the remaining work clearly."
+                        ),
+                    })
+                else:
+                    logger.warning(
+                        "max turns reached",
+                        extra={
+                            "turn_id": turn_id,
+                            "base_max_turns": base_max_turns,
+                            "max_turns": current_max_turns,
+                            "num_turns": num_turns,
+                            "tool_rounds": tool_rounds,
+                            "terminal_reason": "max_turns",
+                            "last_tool_error": last_tool_error,
+                        },
+                    )
+                    return await finish("max_rounds", "max_turns")
 
             text_content = ""
             thinking_blocks: list[dict] = []
             tool_uses: list[dict] = []
             usage_info: dict = {}
             had_incomplete_tool_call = False
+            tools_for_call = [] if finalization_pass else tool_list
 
             try:
                 async for event in stream_chat_completion(
-                    channel, model, api_messages, usage_info, tool_list
+                    channel, model, api_messages, usage_info, tools_for_call
                 ):
                     if self._cancel_event.is_set():
                         break
@@ -315,9 +464,7 @@ class QueryEngine:
                         text_content += event["content"]
                         await self._emit(
                             on_event,
-                            TurnEvent(
-                                turn_id, "text", {"content": event["content"]}
-                            ),
+                            TurnEvent(turn_id, "text", {"content": event["content"]}),
                         )
                     elif event["type"] == "tool_use":
                         tool_uses.append(event)
@@ -350,15 +497,11 @@ class QueryEngine:
                     compact_retry_remaining -= 1
                     logger.warning(
                         "context length exceeded, retrying with reactive compact",
-                        extra={"turn_id": turn_id, "round": round_num, "error": error_str},
+                        extra={"turn_id": turn_id, "round": num_turns, "error": error_str},
                     )
                     await self._emit(
                         on_event,
-                        TurnEvent(
-                            turn_id,
-                            "compact_start",
-                            {"strategy": "reactive"},
-                        ),
+                        TurnEvent(turn_id, "compact_start", {"strategy": "reactive"}),
                     )
                     all_messages = list_messages(
                         self.config.paths.chat_path,
@@ -400,14 +543,7 @@ class QueryEngine:
                     on_event,
                     TurnEvent(turn_id, "error", {"message": error_str}),
                 )
-                return TurnResult(
-                    turn_id=turn_id,
-                    status="error",
-                    error=error_str,
-                    tool_rounds=round_num,
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                )
+                return await finish("error", "error", error=error_str)
             finally:
                 if channel.provider_type == "anthropic":
                     total_output_tokens += usage_info.get("output_tokens", 0)
@@ -422,100 +558,44 @@ class QueryEngine:
                     last_input_tokens=total_input_tokens,
                 )
 
+            num_turns += 1
+            pending_tool_results = False
+
             if self._cancel_event.is_set():
-                if text_content:
-                    if thinking_blocks:
-                        assistant_content = []
-                        for th in thinking_blocks:
-                            assistant_content.append({
-                                "type": "thinking",
-                                "thinking": th["thinking"],
-                                "signature": th.get("signature", ""),
-                            })
-                        assistant_content.append({"type": "text", "text": text_content})
-                        content = json.dumps(assistant_content)
-                    else:
-                        content = text_content
-                    add_message_with_turn(
-                        self.config.paths.chat_path,
-                        conversation_id=self.config.conversation_id,
-                        turn_id=turn_id,
-                        role="assistant",
-                        subtype="normal",
-                        content=content,
-                    )
-                elif round_num == 0:
-                    add_message_with_turn(
-                        self.config.paths.chat_path,
-                        conversation_id=self.config.conversation_id,
-                        turn_id=turn_id,
-                        role="assistant",
-                        subtype="interrupted",
-                        content="[Interrupted]",
-                    )
-                await self._emit(
-                    on_event,
-                    TurnEvent(turn_id, "turn_end", {"cancelled": True}),
+                persist_normal_message(thinking_blocks, text_content)
+                return await finish("cancelled", "cancelled", cancelled=True)
+
+            if finalization_pass and tool_uses:
+                reason = (
+                    "auto_continue_limit_reached"
+                    if self.config.enable_auto_continue
+                    and auto_continue_count >= self.config.max_auto_continues
+                    else "max_turns"
                 )
-                return TurnResult(
-                    turn_id=turn_id,
-                    status="cancelled",
-                    tool_rounds=round_num,
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                )
+                return await finish("max_rounds", reason)
 
             if not tool_uses:
-                if had_incomplete_tool_call and round_num + 1 < max_rounds and auto_continue_count < max_auto_continues:
-                    auto_continue_count += 1
+                if (
+                    had_incomplete_tool_call
+                    and incomplete_continue_count < max_incomplete_continues
+                ):
+                    incomplete_continue_count += 1
                     logger.info(
                         "auto-continuing after incomplete tool call",
                         extra={
                             "turn_id": turn_id,
-                            "round": round_num,
-                            "auto_continue_count": auto_continue_count,
+                            "round": num_turns,
+                            "auto_continue_count": incomplete_continue_count,
                             "tool_name": "unknown",
                         },
                     )
-                    # Persist partial assistant message
-                    if thinking_blocks or text_content:
-                        if thinking_blocks:
-                            ac: list[dict] = []
-                            for th in thinking_blocks:
-                                ac.append({
-                                    "type": "thinking",
-                                    "thinking": th["thinking"],
-                                    "signature": th.get("signature", ""),
-                                })
-                            if text_content:
-                                ac.append({"type": "text", "text": text_content})
-                            stored = json.dumps(ac)
-                        else:
-                            stored = text_content
-                        add_message_with_turn(
-                            self.config.paths.chat_path,
-                            conversation_id=self.config.conversation_id,
-                            turn_id=turn_id,
-                            role="assistant",
-                            subtype="normal",
-                            content=stored,
-                        )
-                    # Append partial message + continuation to api_messages
-                    if thinking_blocks:
-                        api_ac: list[dict] = []
-                        for th in thinking_blocks:
-                            api_ac.append({
-                                "type": "thinking",
-                                "thinking": th["thinking"],
-                                "signature": th.get("signature", ""),
-                            })
-                        if text_content:
-                            api_ac.append({"type": "text", "text": text_content})
-                        api_messages.append({"role": "assistant", "content": api_ac})
-                    elif text_content:
-                        api_messages.append({"role": "assistant", "content": text_content})
-                    else:
-                        api_messages.append({"role": "assistant", "content": ""})
+                    persist_normal_message(thinking_blocks, text_content)
+                    api_messages.append({
+                        "role": "assistant",
+                        "content": assistant_blocks(thinking_blocks, text_content)
+                        if thinking_blocks
+                        else text_content,
+                    })
                     api_messages.append({
                         "role": "user",
                         "content": (
@@ -525,65 +605,43 @@ class QueryEngine:
                     })
                     continue
 
-                if text_content:
-                    if thinking_blocks:
-                        assistant_content: list[dict] = []
-                        for th in thinking_blocks:
-                            assistant_content.append({
-                                "type": "thinking",
-                                "thinking": th["thinking"],
-                                "signature": th.get("signature", ""),
-                            })
-                        assistant_content.append({"type": "text", "text": text_content})
-                        content = json.dumps(assistant_content)
-                    else:
-                        content = text_content
-                    add_message_with_turn(
-                        self.config.paths.chat_path,
-                        conversation_id=self.config.conversation_id,
-                        turn_id=turn_id,
-                        role="assistant",
-                        subtype="normal",
-                        content=content,
+                if had_incomplete_tool_call:
+                    persist_normal_message(thinking_blocks, text_content)
+                    return await finish(
+                        "max_rounds",
+                        "incomplete_tool_call_limit_reached",
+                        final_text=text_content,
                     )
-                await self._emit(
-                    on_event,
-                    TurnEvent(
-                        turn_id,
-                        "turn_end",
-                        {
-                            "final_text": text_content,
-                            "tool_rounds": round_num,
-                            "input_tokens": total_input_tokens,
-                            "output_tokens": total_output_tokens,
-                        },
-                    ),
-                )
-                return TurnResult(
-                    turn_id=turn_id,
-                    status="completed",
+
+                persist_normal_message(thinking_blocks, text_content)
+                if finalization_pass:
+                    reason = (
+                        "auto_continue_limit_reached"
+                        if self.config.enable_auto_continue
+                        and auto_continue_count >= self.config.max_auto_continues
+                        else "max_turns"
+                    )
+                    return await finish(
+                        "max_rounds",
+                        reason,
+                        final_text=text_content,
+                    )
+                return await finish(
+                    "completed",
+                    "completed",
                     final_text=text_content,
-                    tool_rounds=round_num,
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
                 )
 
-            assistant_content: list[dict] = []
-            for th in thinking_blocks:
-                assistant_content.append({
-                    "type": "thinking",
-                    "thinking": th["thinking"],
-                    "signature": th.get("signature", ""),
-                })
-            if text_content:
-                assistant_content.append({"type": "text", "text": text_content})
-            for tu in tool_uses:
-                assistant_content.append({
+            assistant_content = assistant_blocks(thinking_blocks, text_content)
+            assistant_content.extend(
+                {
                     "type": "tool_use",
                     "id": tu["id"],
                     "name": tu["name"],
                     "input": tu["input"],
-                })
+                }
+                for tu in tool_uses
+            )
 
             add_message_with_turn(
                 self.config.paths.chat_path,
@@ -594,11 +652,16 @@ class QueryEngine:
                 content=json.dumps(assistant_content),
             )
             api_messages.append({"role": "assistant", "content": assistant_content})
+            tool_rounds += 1
 
             for tu in tool_uses:
                 tool_result = await self._execute_tool(
                     turn_id, tu["name"], tu["input"], tu["id"], on_event
                 )
+                if tool_result.get("ok", False):
+                    last_tool_error = None
+                else:
+                    last_tool_error = tool_result.get("error_code") or "TOOL_ERROR"
                 api_messages.append({
                     "role": "tool",
                     "tool_use_id": tu["id"],
@@ -614,69 +677,12 @@ class QueryEngine:
                             "name": tu["name"],
                             "ok": tool_result.get("ok", False),
                             "content": tool_result.get("content", ""),
+                            "error_code": tool_result.get("error_code"),
                         },
                     ),
                 )
 
-            if self._cancel_event.is_set():
-                await self._emit(
-                    on_event,
-                    TurnEvent(turn_id, "turn_end", {"cancelled": True}),
-                )
-                return TurnResult(
-                    turn_id=turn_id,
-                    status="cancelled",
-                    tool_rounds=round_num + 1,
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                )
-
-            if round_num + 1 >= max_rounds:
-                logger.warning(
-                    "max tool rounds reached",
-                    extra={"turn_id": turn_id, "max_rounds": max_rounds},
-                )
-                await self._emit(
-                    on_event,
-                    TurnEvent(
-                        turn_id,
-                        "turn_end",
-                        {
-                            "status": "max_rounds",
-                            "tool_rounds": max_rounds,
-                            "input_tokens": total_input_tokens,
-                            "output_tokens": total_output_tokens,
-                        },
-                    ),
-                )
-                return TurnResult(
-                    turn_id=turn_id,
-                    status="max_rounds",
-                    tool_rounds=max_rounds,
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                )
-
-        await self._emit(
-            on_event,
-            TurnEvent(
-                turn_id,
-                "turn_end",
-                {
-                    "status": "max_rounds",
-                    "tool_rounds": max_rounds,
-                    "input_tokens": total_input_tokens,
-                    "output_tokens": total_output_tokens,
-                },
-            ),
-        )
-        return TurnResult(
-            turn_id=turn_id,
-            status="max_rounds",
-            tool_rounds=max_rounds,
-            input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens,
-        )
+            pending_tool_results = True
 
     def _resolve_turn_skills(
         self,
@@ -772,7 +778,13 @@ class QueryEngine:
                 tool_call_id=tool_use_id,
                 meta=json.dumps({"error_code": "TOOL_NOT_INITIALIZED"}),
             )
-            return {"ok": False, "content": result_text, "tool_use_id": tool_use_id}
+            return {
+                "ok": False,
+                "content": result_text,
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+                "error_code": "TOOL_NOT_INITIALIZED",
+            }
 
         logger.info(
             "executing tool",
@@ -1060,6 +1072,8 @@ class QueryEngine:
             "ok": result.ok,
             "content": result.content,
             "tool_use_id": tool_use_id,
+            "tool_name": tool_name,
+            "error_code": result.error_code,
         }
 
     def _write_permission_transcript(

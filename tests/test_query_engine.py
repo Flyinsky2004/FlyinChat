@@ -17,6 +17,7 @@ from flyinchat.storage import (
     initialize_storage,
     list_messages,
 )
+from flyinchat.tools.bash_tool import BashTool
 from flyinchat.tools.core import (
     PermissionContext,
     ToolContext,
@@ -365,14 +366,17 @@ class TestQueryEngineBasic:
 
         asyncio.run(run())
 
-    def test_max_tool_rounds_enforced(self, tmp_path: Path) -> None:
+    def test_max_tool_rounds_enforced_without_auto_continue(self, tmp_path: Path) -> None:
         import asyncio
 
         async def run():
             paths = _setup_storage(tmp_path)
             conv = create_conversation(paths.chat_path, title="test")
             config = QueryEngineConfig(
-                paths=paths, conversation_id=conv.id, max_tool_rounds=3
+                paths=paths,
+                conversation_id=conv.id,
+                max_tool_rounds=3,
+                enable_auto_continue=False,
             )
             engine = QueryEngine(config)
 
@@ -401,6 +405,256 @@ class TestQueryEngineBasic:
                 result, _ = await _collect_events(engine, "loop forever")
                 assert result.status == "max_rounds"
                 assert result.tool_rounds == 3
+                assert result.num_turns == 4
+                assert result.terminal_reason == "max_turns"
+
+        asyncio.run(run())
+
+    def test_finalization_consumes_last_tool_result_after_budget(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_path, title="test")
+            config = QueryEngineConfig(
+                paths=paths,
+                conversation_id=conv.id,
+                max_tool_rounds=1,
+                enable_auto_continue=False,
+            )
+            engine = QueryEngine(config)
+            call_count = 0
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                nonlocal call_count
+                call_count += 1
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                if call_count == 1:
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "file_read",
+                        "input": {"path": "dne.txt"},
+                    }
+                else:
+                    assert tools == []
+                    yield {"type": "text", "content": "Budget reached after tool result"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "read missing file")
+                assert result.status == "max_rounds"
+                assert result.final_text == "Budget reached after tool result"
+                assert result.num_turns == 2
+                assert result.tool_rounds == 1
+                assert result.terminal_reason == "max_turns"
+
+        asyncio.run(run())
+
+    def test_auto_continue_extends_long_tool_chain(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_path, title="test")
+            config = QueryEngineConfig(
+                paths=paths,
+                conversation_id=conv.id,
+                max_tool_rounds=1,
+                max_auto_continues=1,
+                auto_continue_turns=1,
+            )
+            engine = QueryEngine(config)
+            call_count = 0
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                nonlocal call_count
+                call_count += 1
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                if call_count == 1:
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "file_read",
+                        "input": {"path": "dne.txt"},
+                    }
+                else:
+                    yield {"type": "text", "content": "continued and finished"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, events = await _collect_events(engine, "continue")
+                assert result.status == "completed"
+                assert result.num_turns == 2
+                assert result.max_turns == 2
+                assert result.tool_rounds == 1
+                assert any(e.event_type == "auto_continue" for e in events)
+
+        asyncio.run(run())
+
+    def test_incomplete_tool_call_retry_exhaustion_is_not_completed(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_path, title="test")
+            config = QueryEngineConfig(
+                paths=paths,
+                conversation_id=conv.id,
+                max_tool_rounds=10,
+                enable_auto_continue=False,
+            )
+            engine = QueryEngine(config)
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                yield {"type": "incomplete_tool_call", "name": "file_read"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "truncated tool")
+                assert result.status == "max_rounds"
+                assert result.terminal_reason == "incomplete_tool_call_limit_reached"
+
+        asyncio.run(run())
+
+    def test_last_tool_error_clears_after_successful_retry(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_path, title="test")
+            config = QueryEngineConfig(paths=paths, conversation_id=conv.id)
+            engine = QueryEngine(config)
+            registry = ToolRegistry()
+            registry.register(BashTool())
+            executor = ToolExecutor(registry)
+            ctx = _make_tool_context(paths.project_dir)
+            engine.configure_tools(registry, executor, ctx)
+            call_count = 0
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                nonlocal call_count
+                call_count += 1
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                if call_count == 1:
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "bash",
+                        "input": {"command": "grep needle missing.txt", "timeout": 5},
+                    }
+                elif call_count == 2:
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_002",
+                        "name": "bash",
+                        "input": {"command": "pwd", "timeout": 5},
+                    }
+                else:
+                    yield {"type": "text", "content": "recovered"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "retry command")
+                assert result.status == "completed"
+                assert result.last_tool_error is None
+
+        asyncio.run(run())
+
+    def test_last_tool_error_tracks_nonzero_exit(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_path, title="test")
+            config = QueryEngineConfig(
+                paths=paths,
+                conversation_id=conv.id,
+                max_tool_rounds=1,
+                enable_auto_continue=False,
+            )
+            engine = QueryEngine(config)
+            registry = ToolRegistry()
+            registry.register(BashTool())
+            executor = ToolExecutor(registry)
+            ctx = _make_tool_context(paths.project_dir)
+            engine.configure_tools(registry, executor, ctx)
+            call_count = 0
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                nonlocal call_count
+                call_count += 1
+                usage_info["completion_tokens"] = 10
+                usage_info["prompt_tokens"] = 5
+                if call_count == 1:
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "bash",
+                        "input": {"command": "grep needle missing.txt", "timeout": 5},
+                    }
+                else:
+                    yield {"type": "text", "content": "grep failed"}
+                return
+
+            with (
+                patch(
+                    "flyinchat.query_engine.stream_chat_completion",
+                    side_effect=mock_stream,
+                ),
+                patch(
+                    "flyinchat.query_engine.CompactionEngine.compact_if_needed_async",
+                    new_callable=AsyncMock,
+                ) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "run grep")
+                assert result.last_tool_error == "NONZERO_EXIT"
 
         asyncio.run(run())
 

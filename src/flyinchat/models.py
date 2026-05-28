@@ -61,6 +61,10 @@ class TurnResult:
     input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+    num_turns: int = 0
+    max_turns: int = 0
+    terminal_reason: str | None = None
+    last_tool_error: str | None = None
 
 
 @dataclass(frozen=True)
