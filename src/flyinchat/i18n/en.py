@@ -24,6 +24,8 @@ EN: dict[TKey, str] = {
     TKey.CMD_LANGUAGE_DESC: "Switch interface language (EN / 中文)",
     TKey.CMD_INIT: "/init",
     TKey.CMD_INIT_DESC: "Generate/update FLYINCHAT.md project memory file",
+    TKey.CMD_MCP: "/mcp",
+    TKey.CMD_MCP_DESC: "View MCP server status and tool list",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "Fast, minimal reasoning",
@@ -136,6 +138,16 @@ EN: dict[TKey, str] = {
     TKey.SEL_EFFORT_FOOTER: "Use ↑/↓ to choose, Enter to set.",
     TKey.SEL_SESSION_TITLE: "Session history",
     TKey.SEL_SESSION_FOOTER: "Use ↑/↓ to choose a session, Enter to select.",
+    TKey.SEL_MCP_TITLE: "MCP Servers",
+    TKey.SEL_MCP_FOOTER: "Use ↑/↓ to choose a server, Enter to view details.",
+
+    # ── MCP panels ──
+    TKey.PANEL_MCP_DETAIL: "MCP Server Detail",
+    TKey.PANEL_MCP_NO_SERVERS: "No MCP servers configured.\n\nAdd servers to the `mcp_servers` field in `~/.flyinchat/config.json`.",
+    TKey.PANEL_MCP_STATUS_CONNECTED: "Connected",
+    TKey.PANEL_MCP_STATUS_ERROR: "Connection error",
+    TKey.PANEL_MCP_STATUS_CONNECTING: "Connecting",
+    TKey.PANEL_MCP_STATUS_DISCONNECTED: "Disconnected",
 
     # ── Status bar ──
     TKey.STATUS_WORKING: "Working",

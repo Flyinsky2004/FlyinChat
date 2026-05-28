@@ -25,6 +25,8 @@ class TKey(StrEnum):
     CMD_LANGUAGE_DESC = "cmd.language.desc"
     CMD_INIT = "cmd.init"
     CMD_INIT_DESC = "cmd.init.desc"
+    CMD_MCP = "cmd.mcp"
+    CMD_MCP_DESC = "cmd.mcp.desc"
 
     # ── Reasoning levels ──
     REASONING_LOW = "reasoning.low"
@@ -137,6 +139,16 @@ class TKey(StrEnum):
     SEL_EFFORT_FOOTER = "sel.effort.footer"
     SEL_SESSION_TITLE = "sel.session.title"
     SEL_SESSION_FOOTER = "sel.session.footer"
+    SEL_MCP_TITLE = "sel.mcp.title"
+    SEL_MCP_FOOTER = "sel.mcp.footer"
+
+    # ── MCP panels ──
+    PANEL_MCP_DETAIL = "panel.mcp.detail"
+    PANEL_MCP_NO_SERVERS = "panel.mcp.no_servers"
+    PANEL_MCP_STATUS_CONNECTED = "panel.mcp.status.connected"
+    PANEL_MCP_STATUS_ERROR = "panel.mcp.status.error"
+    PANEL_MCP_STATUS_CONNECTING = "panel.mcp.status.connecting"
+    PANEL_MCP_STATUS_DISCONNECTED = "panel.mcp.status.disconnected"
 
     # ── Status bar ──
     STATUS_WORKING = "status.working"

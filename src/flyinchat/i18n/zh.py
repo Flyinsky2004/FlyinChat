@@ -24,6 +24,8 @@ ZH: dict[TKey, str] = {
     TKey.CMD_LANGUAGE_DESC: "切换界面语言（EN / 中文）",
     TKey.CMD_INIT: "/init",
     TKey.CMD_INIT_DESC: "生成/更新 FLYINCHAT.md 项目记忆文件",
+    TKey.CMD_MCP: "/mcp",
+    TKey.CMD_MCP_DESC: "查看 MCP 服务器状态与工具列表",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "快速，最少推理",
@@ -136,6 +138,16 @@ ZH: dict[TKey, str] = {
     TKey.SEL_EFFORT_FOOTER: "↑/↓ 选择，Enter 设置。",
     TKey.SEL_SESSION_TITLE: "会话历史",
     TKey.SEL_SESSION_FOOTER: "↑/↓ 选择会话，Enter 进入。",
+    TKey.SEL_MCP_TITLE: "MCP 服务器",
+    TKey.SEL_MCP_FOOTER: "↑/↓ 选择服务器，Enter 查看详情。",
+
+    # ── MCP panels ──
+    TKey.PANEL_MCP_DETAIL: "MCP 服务器详情",
+    TKey.PANEL_MCP_NO_SERVERS: "未配置 MCP 服务器。\n\n在 `~/.flyinchat/config.json` 的 `mcp_servers` 字段中添加服务器配置。",
+    TKey.PANEL_MCP_STATUS_CONNECTED: "已连接",
+    TKey.PANEL_MCP_STATUS_ERROR: "连接错误",
+    TKey.PANEL_MCP_STATUS_CONNECTING: "连接中",
+    TKey.PANEL_MCP_STATUS_DISCONNECTED: "已断开",
 
     # ── Status bar ──
     TKey.STATUS_WORKING: "正在处理",

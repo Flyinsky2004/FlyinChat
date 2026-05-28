@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from .models import Conversation, LLMChannel, LLMModel, Message
 from .paths import AppPaths, resolve_app_paths
+from .mcp.config import MCPConfig
 
 _PROVIDER_TYPES = frozenset({"openai_compatible", "anthropic"})
 _MESSAGE_ROLES = frozenset({"system", "user", "assistant", "tool"})
@@ -536,6 +537,12 @@ def set_app_setting(path: Path, key: str, value: str) -> None:
     _write_json(path, {**store, "app_settings": settings})
 
 
+def load_mcp_config(paths: AppPaths) -> MCPConfig:
+    """Load MCP server configuration from config.json."""
+    store = _load_config_store(paths.config_path)
+    return MCPConfig.from_dict(store)
+
+
 def _load_config_store(path: Path) -> dict[str, Any]:
     store = _load_json(path, _default_config_store)
     return {
@@ -543,6 +550,7 @@ def _load_config_store(path: Path) -> dict[str, Any]:
         "llm_channels": [_normalize_channel_dict(row) for row in store.get("llm_channels", [])],
         "llm_models": [_normalize_model_dict(row) for row in store.get("llm_models", [])],
         "app_settings": dict(store.get("app_settings", {})),
+        "mcp_servers": list(store.get("mcp_servers", [])),
     }
 
 

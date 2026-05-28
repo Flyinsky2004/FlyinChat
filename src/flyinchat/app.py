@@ -36,12 +36,14 @@ from .storage import (
     list_llm_channels,
     list_llm_models,
     list_messages,
+    load_mcp_config,
     set_app_setting,
     set_model_context_window,
     set_model_reasoning_effort,
     set_model_thinking,
     set_primary_llm_model,
 )
+from .mcp import MCPManager
 from .tools import (
     AskUserQuestionTool,
     BashTool,
@@ -130,6 +132,7 @@ class FlyinChatApp(App[None]):
         self._prompt_history_draft = ""
         self._active_mention_span: MentionSpan | None = None
         self._mode: int = 0  # 0=normal, 1=auto_edit, 2=yolo, 3=plan
+        self._mcp_manager: MCPManager | None = None
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
         t = self.i18n.t
@@ -144,6 +147,7 @@ class FlyinChatApp(App[None]):
             SelectionItem("/clear", t(TKey.CMD_CLEAR), t(TKey.CMD_CLEAR_DESC)),
             SelectionItem("/compact", t(TKey.CMD_COMPACT), t(TKey.CMD_COMPACT_DESC)),
             SelectionItem("/language", t(TKey.CMD_LANGUAGE), t(TKey.CMD_LANGUAGE_DESC)),
+            SelectionItem("/mcp", t(TKey.CMD_MCP), t(TKey.CMD_MCP_DESC)),
             SelectionItem("/init", t(TKey.CMD_INIT), t(TKey.CMD_INIT_DESC)),
         )
 
@@ -293,6 +297,11 @@ class FlyinChatApp(App[None]):
         self.query_one("#prompt-input", Input).focus()
         self._render_status_bar()
 
+    async def action_quit(self) -> None:
+        if self._mcp_manager is not None:
+            await self._mcp_manager.shutdown()
+        await super().action_quit()
+
     def _init_tools(self) -> None:
         workspace = self.paths.project_dir.parent if self.paths is not None else Path.cwd()
         permission = PermissionContext(
@@ -331,6 +340,22 @@ class FlyinChatApp(App[None]):
             self._query_engine.configure_tools(
                 self._tool_registry, self._tool_executor, self._tool_context
             )
+        self._init_mcp_servers()
+
+    @work(exclusive=True)
+    async def _init_mcp_servers(self) -> None:
+        """Initialize MCP server connections in the background."""
+        if self.paths is None or self._tool_registry is None or self._tool_context is None:
+            return
+        self._mcp_manager = MCPManager()
+        mcp_config = load_mcp_config(self.paths)
+        if mcp_config.servers:
+            await self._mcp_manager.connect_all(
+                mcp_config.servers,
+                self._tool_registry,
+                self._tool_context,
+            )
+        self.call_later(self._render_status_bar)
 
     def _ensure_query_engine(self) -> QueryEngine:
         if self._query_engine is None and self.paths is not None and self.active_conversation_id is not None:
@@ -715,6 +740,8 @@ class FlyinChatApp(App[None]):
                 self._toggle_language()
             case "/init":
                 self._run_init()
+            case "/mcp":
+                self._show_mcp_servers()
             case _:
                 self._show_panel(
                     self.i18n.t(TKey.PANEL_UNKNOWN_CMD),
@@ -770,6 +797,119 @@ class FlyinChatApp(App[None]):
         self._render_history()
         self._start_spinner()
         self._submit_via_engine(prompt)
+
+    def _show_mcp_servers(self) -> None:
+        """Show MCP server list in selection UI."""
+        self._clear_selection()
+        if self._mcp_manager is None:
+            mcp_config = load_mcp_config(self.paths) if self.paths else None
+            servers = mcp_config.servers if mcp_config else []
+        else:
+            mcp_status = self._mcp_manager.get_status()
+            mcp_config = load_mcp_config(self.paths) if self.paths else None
+            servers = mcp_config.servers if mcp_config else []
+
+        if not servers:
+            self._show_panel(
+                self.i18n.t(TKey.CMD_MCP),
+                self.i18n.t(TKey.PANEL_MCP_NO_SERVERS),
+            )
+            return
+
+        status_map = self._mcp_manager.get_status() if self._mcp_manager else {}
+        t = self.i18n.t
+
+        def status_label(name: str) -> str:
+            s = status_map.get(name, "")
+            if s == "connected":
+                return f"[{t(TKey.PANEL_MCP_STATUS_CONNECTED)}]"
+            if s == "error":
+                return f"[{t(TKey.PANEL_MCP_STATUS_ERROR)}]"
+            if s == "connecting":
+                return f"[{t(TKey.PANEL_MCP_STATUS_CONNECTING)}]"
+            return f"[{t(TKey.PANEL_MCP_STATUS_DISCONNECTED)}]"
+
+        items = tuple(
+            SelectionItem(
+                server.name,
+                f"{server.name} {status_label(server.name)}",
+                f"command: {server.command} {' '.join(server.args)}",
+            )
+            for server in servers
+        )
+
+        self._set_selection(
+            context="mcp_select",
+            title=t(TKey.SEL_MCP_TITLE),
+            items=items,
+            footer=t(TKey.SEL_MCP_FOOTER),
+            target_menu=True,
+        )
+        self._force_command_menu_refresh()
+
+    def _force_command_menu_refresh(self) -> None:
+        """Force the command menu to refresh and display."""
+        self.query_one("#command-menu", Static).display = False
+        self.call_later(self._render_selection)
+
+    def _show_mcp_detail(self, server_name: str) -> None:
+        """Show detailed info for a specific MCP server."""
+        self._clear_selection()
+        if self._mcp_manager is None:
+            self._show_panel(self.i18n.t(TKey.PANEL_MCP_DETAIL), "MCP manager not initialized.")
+            return
+
+        mcp_config = load_mcp_config(self.paths) if self.paths else None
+        server = next(
+            (s for s in (mcp_config.servers if mcp_config else []) if s.name == server_name),
+            None,
+        )
+        if server is None:
+            self._show_panel(self.i18n.t(TKey.PANEL_MCP_DETAIL), f"Server '{server_name}' not found.")
+            return
+
+        status_map = self._mcp_manager.get_status()
+        status = status_map.get(server_name, "disconnected")
+        t = self.i18n.t
+
+        def status_text(s: str) -> str:
+            if s == "connected":
+                return t(TKey.PANEL_MCP_STATUS_CONNECTED)
+            if s == "error":
+                return t(TKey.PANEL_MCP_STATUS_ERROR)
+            if s == "connecting":
+                return t(TKey.PANEL_MCP_STATUS_CONNECTING)
+            return t(TKey.PANEL_MCP_STATUS_DISCONNECTED)
+
+        lines = [
+            f"**Server:** {server.name}",
+            f"**Status:** {status_text(status)}",
+            f"**Transport:** {server.transport}",
+            f"**Command:** {server.command}",
+        ]
+        if server.args:
+            lines.append(f"**Args:** `{' '.join(server.args)}`")
+        if server.env:
+            env_str = ", ".join(f"{k}={v}" for k, v in server.env.items())
+            lines.append(f"**Env:** {env_str}")
+        lines.append(f"**Timeout:** {server.timeout_seconds}s")
+
+        if self._tool_registry:
+            mcp_tools = [
+                tn for tn in self._tool_registry.list_tools()
+                if tn.startswith(f"mcp_{server_name}_")
+            ]
+            if mcp_tools:
+                lines.append("")
+                lines.append(f"**Tools ({len(mcp_tools)}):**")
+                for tool_name in sorted(mcp_tools):
+                    tool = self._tool_registry.get(tool_name)
+                    lines.append(f"  - `{tool_name}` — {tool.description[:60]}")
+            else:
+                lines.append("")
+                lines.append("**Tools:** None registered")
+
+        self._show_panel(t(TKey.PANEL_MCP_DETAIL), "\n".join(lines))
 
     def _show_command_menu(self, query: str) -> None:
         command_menu = self.query_one("#command-menu", Static)
@@ -865,6 +1005,8 @@ class FlyinChatApp(App[None]):
                 self._render_status_bar()
             case "permission_request":
                 self._resolve_pending_permission(item.key)
+            case "mcp_select":
+                self._show_mcp_detail(item.key)
 
     def _insert_selected_file_mention(self) -> None:
         if not self.selection_items:
@@ -1933,6 +2075,13 @@ class FlyinChatApp(App[None]):
                     parts.append(f"↑{inp} ↓{self._total_output_tokens}")
         else:
             parts.append(t(TKey.STATUS_NO_CONV))
+
+        if self._mcp_manager is not None:
+            mcp_status = self._mcp_manager.get_status()
+            if mcp_status:
+                connected = sum(1 for s in mcp_status.values() if s == "connected")
+                total = len(mcp_status)
+                parts.append(f"MCP: {connected}/{total}")
 
         _update("  |  ".join(parts))
 
