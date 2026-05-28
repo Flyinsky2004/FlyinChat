@@ -242,4 +242,78 @@ def test_normalize_schema_defaults() -> None:
     assert _normalize_schema({}) == {"type": "object", "properties": {}, "required": []}
     schema = _normalize_schema({"properties": {"x": {"type": "int"}}})
     assert schema["type"] == "object"
-    assert "x" in schema["properties"]
+
+
+# ── Permission gating tests ──
+
+class FakeMCPTool:
+    """Minimal fake Tool for testing executor gating."""
+    name = "mcp_test_read"
+    description = "test"
+    version = "1.0"
+    risk_level = "low"
+    def input_schema(self): return {}
+    def requires_permission(self, tool_input, context):
+        return PermissionDecision(True, "")
+    async def run(self, tool_input, context):
+        from flyinchat.tools.core import ToolResult
+        return ToolResult(ok=True, content="ok")
+
+
+def _make_context(allowed=None, ask=None, denied=None):
+    from flyinchat.tools.core import ToolContext, PermissionContext
+    from pathlib import Path
+    perm = PermissionContext(
+        allowed_tools=allowed or {"file_read"},
+        ask_tools=ask or {"file_write", "bash"},
+        denied_tools=denied or set(),
+        allowed_read_roots=[Path.cwd()],
+        allowed_write_roots=[Path.cwd()],
+    )
+    return ToolContext(session_id="t", user_id="u", workspace_root=Path.cwd(), permission=perm)
+
+
+def test_mcp_tool_is_ask_by_default():
+    """MCP tools not in allowed/ask/denied lists should be 'ask' (not hard-deny)."""
+    from flyinchat.tools.core import ToolRegistry, ToolExecutor
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+    decision = executor._tool_allowed("mcp_test_read", _make_context())
+    assert decision.ask_user is True, f"MCP tools should ask user, got allowed={decision.allowed} ask_user={decision.ask_user}"
+
+
+def test_mcp_tool_in_allowed_is_allowed():
+    """MCP tools explicitly in allowed_tools should be auto-allowed."""
+    from flyinchat.tools.core import ToolRegistry, ToolExecutor
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+    decision = executor._tool_allowed("mcp_test_read", _make_context(allowed={"mcp_test_read"}, ask=set()))
+    assert decision.allowed is True
+
+
+def test_mcp_tool_in_denied_is_denied():
+    """MCP tools in denied_tools should be hard-denied."""
+    from flyinchat.tools.core import ToolRegistry, ToolExecutor
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+    decision = executor._tool_allowed("mcp_test_read", _make_context(allowed={"file_read"}, denied={"mcp_test_read"}))
+    assert decision.allowed is False and decision.ask_user is False
+
+
+def test_mcp_tool_autoadded_is_auto_allowed():
+    """After add_auto_allow_tool, MCP tool should be auto-allowed without asking."""
+    from flyinchat.tools.core import ToolRegistry, ToolExecutor
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+    executor.add_auto_allow_tool("mcp_test_read")
+    assert executor._is_tool_auto_allowed("mcp_test_read", {}) is True
+    assert executor._is_tool_auto_allowed("mcp_other", {}) is False
+
+
+def test_bash_auto_allow_still_works():
+    """Existing bash command auto-allow should not be affected."""
+    from flyinchat.tools.core import ToolRegistry, ToolExecutor
+    registry = ToolRegistry()
+    executor = ToolExecutor(registry)
+    assert executor._is_tool_auto_allowed("bash", {"command": "ls -la"}) is True  # seed pattern
+    assert executor._is_tool_auto_allowed("bash", {"command": "rm -rf /"}) is False

@@ -120,6 +120,7 @@ class FlyinChatApp(App[None]):
         self._streaming_output_tokens = 0
         self._pending_permission_request_id: str | None = None
         self._pending_permission_tool_input: dict = {}
+        self._pending_permission_tool_name: str = ""
         self._pending_user_input_request_id: str | None = None
         self._pending_user_input_questions: list[dict] = []
         self._pending_user_input_current_q: int = 0
@@ -1102,6 +1103,7 @@ class FlyinChatApp(App[None]):
 
         self._pending_permission_request_id = request_id
         self._pending_permission_tool_input = tool_input
+        self._pending_permission_tool_name = tool_name
 
         t = self.i18n.t
         risk_labels = {"low": t(TKey.RISK_LOW), "medium": t(TKey.RISK_MEDIUM), "high": t(TKey.RISK_HIGH)}
@@ -1344,19 +1346,26 @@ class FlyinChatApp(App[None]):
         engine = self._query_engine
         if engine is not None and self._pending_permission_request_id:
             if resolution == "always_approve":
+                tool_name = getattr(self, "_pending_permission_tool_name", "")
                 tool_input = getattr(self, "_pending_permission_tool_input", {})
-                cmd = tool_input.get("command", "").strip()
-                if cmd and self._tool_executor is not None:
-                    try:
-                        parts = shlex.split(cmd)
-                    except ValueError:
-                        parts = cmd.split()
-                    if parts:
-                        if len(parts) >= 2 and parts[0] == "git":
-                            pattern = f"{parts[0]} {parts[1]}"
-                        else:
-                            pattern = parts[0]
-                        self._tool_executor.add_command_to_allowlist(pattern)
+                if self._tool_executor is not None:
+                    if tool_name.startswith("mcp_"):
+                        # MCP tool: auto-allow by tool name
+                        self._tool_executor.add_auto_allow_tool(tool_name)
+                    else:
+                        # Bash / native tools: extract command prefix
+                        cmd = tool_input.get("command", "").strip()
+                        if cmd:
+                            try:
+                                parts = shlex.split(cmd)
+                            except ValueError:
+                                parts = cmd.split()
+                            if parts:
+                                if len(parts) >= 2 and parts[0] == "git":
+                                    pattern = f"{parts[0]} {parts[1]}"
+                                else:
+                                    pattern = parts[0]
+                                self._tool_executor.add_command_to_allowlist(pattern)
             engine.resolve_permission(self._pending_permission_request_id, resolution)
         self._pending_permission_request_id = None
         self._clear_selection()

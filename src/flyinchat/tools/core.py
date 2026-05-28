@@ -107,9 +107,20 @@ class ToolExecutor:
     def __init__(self, registry: ToolRegistry) -> None:
         self.registry = registry
         self.command_auto_allowlist: set[str] = set(SEED_AUTO_ALLOW_PATTERNS)
+        self._auto_allow_tools: set[str] = set()
 
     def add_command_to_allowlist(self, pattern: str) -> None:
         self.command_auto_allowlist.add(pattern)
+
+    def add_auto_allow_tool(self, tool_name: str) -> None:
+        """Auto-allow a specific tool by name (e.g. MCP tools)."""
+        self._auto_allow_tools.add(tool_name)
+
+    def _is_tool_auto_allowed(self, tool_name: str, tool_input: dict[str, Any]) -> bool:
+        """Check if a tool is auto-allowed by name or command pattern."""
+        if tool_name in self._auto_allow_tools:
+            return True
+        return self._is_command_auto_allowed(tool_name, tool_input)
 
     def _is_command_auto_allowed(
         self, tool_name: str, tool_input: dict[str, Any]
@@ -136,6 +147,9 @@ class ToolExecutor:
             return PermissionDecision(True, "")
         if tool_name in p.ask_tools:
             return PermissionDecision(False, f"requires user approval: {tool_name}", ask_user=True)
+        # MCP tools default to "ask" — gate them through the permission dialog
+        if tool_name.startswith("mcp_"):
+            return PermissionDecision(False, f"MCP tool requires approval: {tool_name}", ask_user=True)
         if p.allowed_tools is None:
             return PermissionDecision(True, "")
         return PermissionDecision(False, f"tool not in allow list: {tool_name}")
@@ -158,9 +172,9 @@ class ToolExecutor:
         gate = self._tool_allowed(tool_name, context)
         if not gate.allowed:
             if gate.ask_user:
-                if self._is_command_auto_allowed(tool_name, tool_input):
+                if self._is_tool_auto_allowed(tool_name, tool_input):
                     logger.info(
-                        "command auto-allowed, skipping permission",
+                        "tool auto-allowed, skipping permission",
                         extra={"tool_name": tool_name},
                     )
                     return await self._run_tool(tool, tool_name, tool_input, context, t0)
