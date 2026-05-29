@@ -2,10 +2,21 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Input, Static
 
 from flyinchat import FlyinChatApp
+from flyinchat.chat_message import ChatMessage
 from flyinchat.paths import resolve_app_paths
+
+
+def _get_message_view_text(app) -> str:
+    """Get combined markdown text from all ChatMessage widgets in message-view."""
+    msg_view = app.query_one("#message-view")
+    parts = []
+    for child in msg_view.children:
+        if hasattr(child, '_markdown'):
+            parts.append(child._markdown)
+    return "\n\n".join(parts)
 from flyinchat.storage import (
     add_message,
     create_conversation,
@@ -54,8 +65,7 @@ def test_submitting_prompt_creates_project_conversation(tmp_path: Path) -> None:
 
             conversations = list_conversations(paths.chat_path)
             messages = list_messages(paths.chat_path, conversation_id=conversations[0].id)
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert conversations[0].title == "Explain this project"
             assert messages[0].role == "user"
@@ -97,8 +107,7 @@ def test_api_command_shows_presets_when_empty(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert "LLM API providers" in raw
             assert "No providers configured yet" in raw
@@ -118,8 +127,7 @@ def test_slash_menu_can_open_api_with_enter(tmp_path: Path) -> None:
             await pilot.press("/")
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert "LLM API providers" in raw
             assert "Add DeepSeek preset" in raw
@@ -142,8 +150,7 @@ def test_api_selection_flow_adds_deepseek(tmp_path: Path) -> None:
 
             channels = list_llm_channels(paths.config_path)
             models = list_llm_models(paths.config_path, channel_id=channels[0].id)
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert channels[0].name == "DeepSeek"
             assert [model.name for model in models] == ["deepseek-v4-pro", "deepseek-v4-flash"]
@@ -165,8 +172,7 @@ def test_api_add_deepseek_creates_preset_channel(tmp_path: Path) -> None:
 
             channels = list_llm_channels(paths.config_path)
             models = list_llm_models(paths.config_path, channel_id=channels[0].id)
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert channels[0].name == "DeepSeek"
             assert channels[0].base_url == "https://api.deepseek.com/anthropic"
@@ -211,8 +217,7 @@ def test_api_page_masks_configured_keys(tmp_path: Path) -> None:
             prompt_input.value = "/api"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert "dee...et" in raw
             assert "deepseek-secret" not in raw
@@ -232,8 +237,7 @@ def test_model_command_lists_configured_models(tmp_path: Path) -> None:
             prompt_input.value = "/model"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert "Primary model" in raw
             assert "1. DeepSeek · anthropic" in raw
@@ -279,8 +283,7 @@ def test_model_use_selects_primary_model(tmp_path: Path) -> None:
             await pilot.press("enter")
 
             primary = get_primary_llm_model(paths.config_path)
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert primary is not None
             assert primary[0].name == "DeepSeek"
@@ -303,8 +306,7 @@ def test_sessions_command_shows_history(tmp_path: Path) -> None:
 
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert "Session history" in raw
             assert "1. Existing chat" in raw
@@ -350,8 +352,7 @@ def test_clear_command_starts_new_session(tmp_path: Path) -> None:
             prompt_input.value = "/clear"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert app.active_conversation_id is None
             assert "New session" in raw
@@ -442,8 +443,7 @@ def test_file_mention_menu_inserts_relative_path(tmp_path: Path) -> None:
         async with app.run_test() as pilot:
             prompt_input = app.query_one("#prompt-input", Input)
             command_menu = app.query_one("#command-menu", Static)
-            message_view = app.query_one("#message-view", Markdown)
-            original_message_view = message_view._markdown
+            original_text = _get_message_view_text(app)
             prompt_input.value = "Explain @"
             prompt_input.action_end()
             await pilot.press("a")
@@ -453,7 +453,7 @@ def test_file_mention_menu_inserts_relative_path(tmp_path: Path) -> None:
 
             assert command_menu.display is True
             assert "src/flyinchat/app.py" in command_menu.content
-            assert message_view._markdown == original_message_view
+            assert _get_message_view_text(app) == original_text
 
             await pilot.press("enter")
 
@@ -479,19 +479,18 @@ def test_file_mention_selection_uses_arrow_keys(tmp_path: Path) -> None:
             prompt_input.action_end()
             await pilot.pause()
 
-            message_view = app.query_one("#message-view", Markdown)
-            original_message_view = message_view._markdown
+            original_text = _get_message_view_text(app)
 
             assert app.selection_context == "file_mention"
             assert app.selected_index == 0
 
             await pilot.press("down")
             assert app.selected_index == 1
-            assert message_view._markdown == original_message_view
+            assert _get_message_view_text(app) == original_text
 
             await pilot.press("up")
             assert app.selected_index == 0
-            assert message_view._markdown == original_message_view
+            assert _get_message_view_text(app) == original_text
 
     asyncio.run(run_app())
 
@@ -559,14 +558,15 @@ def test_streaming_text_renders_before_turn_end(tmp_path: Path) -> None:
                 await asyncio.wait_for(first_chunk_seen.wait(), timeout=1)
                 await pilot.pause()
 
-                message_view = app.query_one("#message-view", Markdown)
-                assert "partial" in message_view._markdown
-                assert "partial complete" not in message_view._markdown
+                text = _get_message_view_text(app)
+                assert "partial" in text
+                assert "partial complete" not in text
 
                 release_stream.set()
                 await pilot.pause(0.2)
 
-                assert "partial complete" in message_view._markdown
+                text = _get_message_view_text(app)
+                assert "partial complete" in text
 
     asyncio.run(run_app())
 
@@ -612,12 +612,12 @@ def test_tool_permission_request_appears_during_conversation(tmp_path: Path) -> 
 
                 await pilot.pause()
 
-                message_view = app.query_one("#message-view", Markdown)
+                text = _get_message_view_text(app)
                 command_menu = app.query_one("#command-menu", Static)
 
                 assert app._pending_permission_request_id is not None
-                assert "Permission Required" in message_view._markdown
-                assert "file_write" in message_view._markdown
+                assert "Permission Required" in text
+                assert "file_write" in text
                 assert command_menu.display is True
                 assert "Approve" in command_menu.content
 
@@ -656,8 +656,7 @@ def test_init_shows_error_without_model(tmp_path: Path) -> None:
             prompt_input.value = "/init"
             await pilot.press("enter")
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
 
             assert "No primary model configured" in raw or "未配置主模型" in raw
 
@@ -712,8 +711,8 @@ def test_init_creates_conversation_and_submits_prompt(tmp_path: Path) -> None:
                 assert len(messages) >= 1
                 assert messages[0].role == "user"
 
-                message_view = app.query_one("#message-view", Markdown)
-                assert "FLYINCHAT.md generated" in message_view._markdown
+                text = _get_message_view_text(app)
+                assert "FLYINCHAT.md generated" in text
 
     asyncio.run(run_app())
 
@@ -748,8 +747,7 @@ Read before editing.
             await pilot.press("enter")
             await pilot.pause(0.1)
 
-            message_view = app.query_one("#message-view", Markdown)
-            raw = message_view._markdown
+            raw = _get_message_view_text(app)
             assert "Agent Skills" in raw
             assert "safe-edit@1.0.0" in raw
             assert "Use when editing files" in raw

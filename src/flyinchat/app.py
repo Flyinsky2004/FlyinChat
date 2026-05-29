@@ -11,8 +11,9 @@ from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
 from textual.css.query import NoMatches
-from textual.widgets import Footer, Header, Input, Markdown, Static
+from textual.widgets import Footer, Header, Input, Static
 
+from .chat_message import ChatMessage
 from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
 from .file_mentions import MentionSpan, find_active_mention, workspace_path_suggestions
 from .i18n import I18nStore, Language, TKey
@@ -139,6 +140,9 @@ class FlyinChatApp(App[None]):
         self._skill_registry: SkillRegistry | None = None
         self._pending_mcp_action_server: str | None = None
         self._todos: list[dict] = []
+        self._message_widgets: dict[str, ChatMessage] = {}
+        self._streaming_widget: ChatMessage | None = None
+        self._transient_counter = 0
 
     def _get_commands(self) -> tuple[SelectionItem, ...]:
         t = self.i18n.t
@@ -225,6 +229,10 @@ class FlyinChatApp(App[None]):
         color: #edf2f7;
     }
 
+    #message-view > ChatMessage {
+        margin-bottom: 1;
+    }
+
     #composer {
         height: auto;
         padding: 1 2;
@@ -298,7 +306,7 @@ class FlyinChatApp(App[None]):
             with Vertical(id="empty-state"):
                 yield Static(_EMPTY_LOGO, id="empty-logo")
                 yield Static(t(TKey.EMPTY_HINT), id="empty-hint")
-            yield Markdown("", id="message-view")
+            yield Vertical(id="message-view")
         with Vertical(id="composer"):
             yield Static("", id="todo-panel")
             yield Static("", id="command-menu")
@@ -498,14 +506,14 @@ class FlyinChatApp(App[None]):
                 self._total_output_tokens = conv.total_output_tokens
             t = self.i18n.t
             history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
-            history_display = "\n\n---\n\n".join(
-                f"**{t(TKey.LABEL_YOU) if msg.role == 'user' else t(TKey.LABEL_ASSISTANT)}**\n\n{self._message_to_display(msg)}"
-                for msg in history
+            self.query_one("#empty-state", Vertical).display = False
+            self._sync_message_widgets(history)
+            self._transient_counter += 1
+            error_widget = ChatMessage(
+                f"**{t(TKey.LABEL_ASSISTANT)}**\n\n{t(TKey.MISC_ERROR_PREFIX, error=result.error)}",
+                widget_id=f"__error_{self._transient_counter}__",
             )
-            prefix = (history_display + "\n\n---\n\n") if history_display else ""
-            self.query_one("#message-view", Markdown).update(
-                f"{prefix}**{t(TKey.LABEL_ASSISTANT)}**\n\n{t(TKey.MISC_ERROR_PREFIX, error=result.error)}"
-            )
+            self.query_one("#message-view", Vertical).mount(error_widget)
             self._scroll_chat_to_bottom()
             self._render_status_bar()
             return
@@ -2027,11 +2035,6 @@ class FlyinChatApp(App[None]):
         self.query_one("#input-label", Static).update(label)
         self.query_one("#prompt-input", Input).placeholder = placeholder
 
-    def _show_panel(self, title: str, body: str) -> None:
-        self.query_one("#empty-state", Vertical).display = False
-        self.query_one("#message-view", Markdown).update(f"## {title}\n\n{body}")
-        self._scroll_chat_to_bottom()
-
     def _scroll_chat_to_bottom(self) -> None:
         def scroll_end() -> None:
             try:
@@ -2041,57 +2044,6 @@ class FlyinChatApp(App[None]):
 
         self.call_after_refresh(scroll_end)
         self.set_timer(0.08, scroll_end)
-
-    def _render_history_with_hint(self, hint: str, *, fallback_title: str = "", fallback_body: str = "") -> bool:
-        """Re-render conversation history with a transient hint appended. Falls back to _show_panel if no history."""
-        if self.paths is not None and self.active_conversation_id is not None:
-            history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
-            if history:
-                t = self.i18n.t
-                lines: list[str] = []
-                for msg in history:
-                    if msg.role == "tool":
-                        lines.append(f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}")
-                    elif msg.role == "system":
-                        lines.append(f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}")
-                    else:
-                        role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
-                        lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
-                lines.append(hint)
-                self.query_one("#empty-state", Vertical).display = False
-                self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-                self._scroll_chat_to_bottom()
-                return True
-        self._show_panel(fallback_title, fallback_body)
-        return False
-
-    def _render_streaming_assistant(self) -> None:
-        if not self._streaming_assistant_text:
-            return
-        if self.paths is None or self.active_conversation_id is None:
-            return
-
-        now = time.monotonic()
-        if self._last_stream_render_at and now - self._last_stream_render_at < self._stream_render_interval:
-            return
-        self._last_stream_render_at = now
-
-        t = self.i18n.t
-        history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
-        lines: list[str] = []
-        for msg in history:
-            if msg.role == "tool":
-                lines.append(f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}")
-            elif msg.role == "system":
-                lines.append(f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}")
-            else:
-                role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
-                lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
-
-        lines.append(f"**{t(TKey.LABEL_ASSISTANT)}**\n\n{self._streaming_assistant_text}")
-        self.query_one("#empty-state", Vertical).display = False
-        self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
-        self._scroll_chat_to_bottom()
 
     def _mode_label(self) -> str:
         """Rich markup label for the current mode."""
@@ -2258,6 +2210,58 @@ class FlyinChatApp(App[None]):
 
         _update("  |  ".join(parts))
 
+    def _clear_message_view(self) -> None:
+        """Remove all widgets from the message view (messages, panel, streaming, hints)."""
+        msg_view = self.query_one("#message-view", Vertical)
+        for child in list(msg_view.children):
+            child.remove()
+        self._message_widgets.clear()
+        self._streaming_widget = None
+
+    def _format_msg_display(self, msg) -> str:
+        """Format a single message for display with role label."""
+        t = self.i18n.t
+        if msg.role == "tool":
+            return f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}"
+        elif msg.role == "system":
+            return f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}"
+        else:
+            role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
+            return f"{role_label}\n\n{self._message_to_display(msg)}"
+
+    def _sync_message_widgets(self, history: list) -> None:
+        """Incrementally sync message widgets to match the given message list.
+
+        Removes widgets for deleted messages, adds widgets for new messages,
+        and cleans up transient widgets (panels, hints, streaming).
+        """
+        msg_view = self.query_one("#message-view", Vertical)
+
+        # Clean up transient widgets (panels, hints, streaming, empty placeholder)
+        for child in list(msg_view.children):
+            cid = child.id or ""
+            if cid.startswith("__") or cid == "":
+                child.remove()
+        if self._streaming_widget is not None:
+            self._streaming_widget.remove()
+            self._streaming_widget = None
+
+        # Remove widgets for messages no longer in history
+        current_ids = set(self._message_widgets.keys())
+        new_ids = {msg.id for msg in history}
+        for msg_id in current_ids - new_ids:
+            widget = self._message_widgets.pop(msg_id, None)
+            if widget is not None:
+                widget.remove()
+
+        # Mount widgets for new messages
+        for msg in history:
+            if msg.id not in self._message_widgets:
+                display_text = self._format_msg_display(msg)
+                widget = ChatMessage(display_text, widget_id=f"msg-{msg.id}")
+                self._message_widgets[msg.id] = widget
+                msg_view.mount(widget)
+
     def _render_history(self) -> None:
         if self.paths is None or self.active_conversation_id is None:
             return
@@ -2266,21 +2270,63 @@ class FlyinChatApp(App[None]):
         self.query_one("#empty-state", Vertical).display = False
 
         if not history:
-            self.query_one("#message-view", Markdown).update(self.i18n.t(TKey.MISC_NO_MESSAGES))
+            self._clear_message_view()
+            msg_view = self.query_one("#message-view", Vertical)
+            self._transient_counter += 1
+            msg_view.mount(ChatMessage(self.i18n.t(TKey.MISC_NO_MESSAGES), widget_id=f"__empty_{self._transient_counter}__"))
             return
 
-        t = self.i18n.t
-        lines: list[str] = []
-        for msg in history:
-            if msg.role == "tool":
-                lines.append(f"**{t(TKey.LABEL_TOOL)}**\n\n{self._message_to_display(msg)}")
-            elif msg.role == "system":
-                lines.append(f"**{t(TKey.LABEL_SYSTEM)}**\n\n{self._message_to_display(msg)}")
-            else:
-                role_label = f"**{t(TKey.LABEL_YOU)}**" if msg.role == "user" else f"**{t(TKey.LABEL_ASSISTANT)}**"
-                lines.append(f"{role_label}\n\n{self._message_to_display(msg)}")
+        self._sync_message_widgets(history)
+        self._scroll_chat_to_bottom()
 
-        self.query_one("#message-view", Markdown).update("\n\n---\n\n".join(lines))
+    def _render_history_with_hint(self, hint: str, *, fallback_title: str = "", fallback_body: str = "") -> bool:
+        """Re-render conversation history with a transient hint appended.
+
+        Falls back to _show_panel if no history."""
+        if self.paths is not None and self.active_conversation_id is not None:
+            history = list_messages(self.paths.chat_path, conversation_id=self.active_conversation_id)
+            if history:
+                self.query_one("#empty-state", Vertical).display = False
+                self._sync_message_widgets(history)
+                self._transient_counter += 1
+                hint_widget = ChatMessage(hint, widget_id=f"__hint_{self._transient_counter}__")
+                self.query_one("#message-view", Vertical).mount(hint_widget)
+                self._scroll_chat_to_bottom()
+                return True
+        self._show_panel(fallback_title, fallback_body)
+        return False
+
+    def _render_streaming_assistant(self) -> None:
+        if not self._streaming_assistant_text:
+            return
+        if self.paths is None or self.active_conversation_id is None:
+            return
+
+        now = time.monotonic()
+        if self._last_stream_render_at and now - self._last_stream_render_at < self._stream_render_interval:
+            return
+        self._last_stream_render_at = now
+
+        t = self.i18n.t
+        label = t(TKey.LABEL_ASSISTANT)
+        streaming_text = f"**{label}**\n\n{self._streaming_assistant_text}"
+
+        if self._streaming_widget is None:
+            msg_view = self.query_one("#message-view", Vertical)
+            self._transient_counter += 1
+            self._streaming_widget = ChatMessage(streaming_text, widget_id=f"__streaming_{self._transient_counter}__")
+            msg_view.mount(self._streaming_widget)
+        else:
+            self._streaming_widget.update(streaming_text)
+
+        self._scroll_chat_to_bottom()
+
+    def _show_panel(self, title: str, body: str) -> None:
+        self.query_one("#empty-state", Vertical).display = False
+        self._clear_message_view()
+        self._transient_counter += 1
+        panel = ChatMessage(f"## {title}\n\n{body}", widget_id=f"__panel_{self._transient_counter}__")
+        self.query_one("#message-view", Vertical).mount(panel)
         self._scroll_chat_to_bottom()
 
     def _mask_api_key(self, api_key: str) -> str:
