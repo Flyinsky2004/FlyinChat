@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from .api_client import stream_chat_completion
-from .compact import CompactionEngine, CompactionPolicy
+from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
 from .message_utils import message_to_api_format, sanitize_api_messages
 from .prompt_assembler import assemble_system_prompt
 from .models import LLMChannel, LLMModel, Message, TurnResult
@@ -551,6 +551,11 @@ class QueryEngine:
                 else:
                     total_output_tokens += usage_info.get("completion_tokens", 0)
                     total_input_tokens = usage_info.get("prompt_tokens", 0)
+                # Fallback: some providers (e.g. DeepSeek) may not report
+                # input_tokens in their Anthropic-compatible SSE events.
+                # Estimate from the messages we sent to avoid showing "↑0".
+                if total_input_tokens == 0 and api_messages:
+                    total_input_tokens = TokenEstimator().estimate_api_messages(api_messages)
                 update_conversation_usage(
                     self.config.paths.chat_path,
                     conversation_id=self.config.conversation_id,

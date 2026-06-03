@@ -25,6 +25,7 @@ class ProviderPreset:
     base_url: str | None
     model_names: tuple[str, ...]
     context_window: int = 125_000
+    max_output_tokens: int = 128_000
 
 
 PROVIDER_PRESETS = {
@@ -35,6 +36,7 @@ PROVIDER_PRESETS = {
         base_url="https://api.deepseek.com/anthropic",
         model_names=("deepseek-v4-pro", "deepseek-v4-flash"),
         context_window=1_000_000,
+        max_output_tokens=128_000,
     )
 }
 
@@ -106,6 +108,7 @@ def create_channel_with_models(
     model_names: Sequence[str],
     base_url: str | None = None,
     context_window: int = 125_000,
+    max_output_tokens: int = 128_000,
 ) -> tuple[LLMChannel, list[LLMModel]]:
     _validate_channel_fields(name=name, provider_type=provider_type, api_key=api_key)
     cleaned_models = _clean_model_names(model_names)
@@ -131,6 +134,7 @@ def create_channel_with_models(
             "thinking_enabled": True,
             "reasoning_effort": "high",
             "context_window": context_window,
+            "max_output_tokens": max_output_tokens,
             "created_at": now,
             "updated_at": now,
         }
@@ -166,6 +170,7 @@ def create_preset_channel(
         api_key=api_key,
         model_names=preset.model_names,
         context_window=preset.context_window,
+        max_output_tokens=preset.max_output_tokens,
     )
 
 
@@ -176,6 +181,7 @@ def add_llm_model(
     name: str,
     is_default: bool = False,
     context_window: int = 125_000,
+    max_output_tokens: int = 128_000,
 ) -> LLMModel:
     if not name.strip():
         raise ValueError("Model name is required")
@@ -198,6 +204,7 @@ def add_llm_model(
         "thinking_enabled": True,
         "reasoning_effort": "high",
         "context_window": context_window,
+        "max_output_tokens": max_output_tokens,
         "created_at": now,
         "updated_at": now,
     }
@@ -742,6 +749,7 @@ def _normalize_model_dict(row: dict[str, Any]) -> dict[str, Any]:
         "thinking_enabled": bool(row.get("thinking_enabled", True)),
         "reasoning_effort": str(row.get("reasoning_effort") or "high"),
         "context_window": int(row.get("context_window") or 125_000),
+        "max_output_tokens": int(row.get("max_output_tokens") or 128_000),
         "created_at": str(row.get("created_at") or now),
         "updated_at": str(row.get("updated_at") or now),
     }

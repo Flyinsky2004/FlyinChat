@@ -24,9 +24,11 @@ from flyinchat.storage import (
 
 def test_token_estimator_basic() -> None:
     est = TokenEstimator()
-    assert est.estimate("hello world") == 2  # 11 chars // 4 = 2
-    assert est.estimate("") == 1  # minimum 1
-    assert est.estimate("a" * 100) == 25  # 100 // 4 = 25
+    # "hello world" = 11 ASCII chars → 11 * 0.3 = 3
+    assert est.estimate("hello world") == 3
+    assert est.estimate("") == 0
+    # 100 ASCII chars → 100 * 0.3 = 30
+    assert est.estimate("a" * 100) == 30
 
 
 def test_token_estimator_messages() -> None:
@@ -37,12 +39,13 @@ def test_token_estimator_messages() -> None:
         Message(id="2", conversation_id="c1", role="assistant", content="a" * 40, created_at=""),
     ]
     est = TokenEstimator()
-    assert est.estimate_messages(msgs) == 12  # 2 + 10
+    # "hello world" = 11 * 0.3 = 3, "a"*40 = 40 * 0.3 = 12, total = 15
+    assert est.estimate_messages(msgs) == 15
 
 
 def test_compaction_policy_thresholds() -> None:
     policy = CompactionPolicy(context_window=125_000)
-    assert policy.soft_limit == 106_250  # 125000 * 0.85
+    assert policy.soft_limit == 87_500  # 125000 * 0.70
     assert policy.hard_limit == 125_000
 
 

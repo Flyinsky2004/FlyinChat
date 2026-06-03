@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,12 +41,32 @@ class CompactMetadata:
     tokens_after: int
 
 
+# CJK character ranges: Unified Ideographs, Extensions, Compatibility, Symbols/Punctuation
+_CJK_RE = re.compile(
+    r"[⺀-⻿　-〿㇀-㇯㐀-䶿"
+    r"一-鿿豈-﫿︰-﹏＀-￯]"
+)
+
+
 @dataclass(frozen=True)
 class TokenEstimator:
-    """Rough token count using chars/4 approximation."""
+    """Token count estimator with CJK-aware character weighting.
+
+    CJK characters typically tokenize as 1–2 tokens each, while Latin/ASCII
+    average ~0.25 tokens per character. JSON structural characters braces,
+    brackets, quotes, and colons are individually tokenized, so the
+    non-CJK ratio is biased conservatively at 0.3 tokens/char.
+    """
+
+    cjk_weight: float = 1.5
+    other_weight: float = 0.3
 
     def estimate(self, text: str) -> int:
-        return max(1, len(text) // 4)
+        if not text:
+            return 0
+        cjk_count = len(_CJK_RE.findall(text))
+        other_count = len(text) - cjk_count
+        return max(1, int(cjk_count * self.cjk_weight + other_count * self.other_weight))
 
     def estimate_messages(self, messages: Sequence[Message]) -> int:
         return sum(self.estimate(msg.content) for msg in messages)
@@ -58,7 +79,7 @@ class TokenEstimator:
 class CompactionPolicy:
     context_window: int
     tool_result_budget_chars: int = 8_000
-    soft_limit_ratio: float = 0.85
+    soft_limit_ratio: float = 0.70
     preserve_turns: int = 4
 
     @property

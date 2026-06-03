@@ -418,14 +418,30 @@ async def _stream_anthropic(
                     if event_type == "message_start" and usage_info is not None:
                         msg_data = data.get("message", {})
                         usage = msg_data.get("usage", {})
+                        if not usage:
+                            usage = data.get("usage", {})
                         if usage:
-                            usage_info["input_tokens"] = usage.get("input_tokens", 0)
+                            inp = usage.get("input_tokens") or usage.get("prompt_tokens", 0)
+                            if inp:
+                                usage_info["input_tokens"] = inp
+                            out = usage.get("output_tokens") or usage.get("completion_tokens", 0)
+                            if out:
+                                usage_info["output_tokens"] = out
+                            if not inp and not out:
+                                logger.debug(
+                                    "message_start usage keys not recognized",
+                                    extra={"usage_keys": list(usage.keys())},
+                                )
 
                     elif event_type == "message_delta" and usage_info is not None:
                         usage = data.get("usage", {})
-                        output_tokens = usage.get("output_tokens", 0)
-                        if output_tokens:
-                            usage_info["output_tokens"] = output_tokens
+                        if usage:
+                            inp = usage.get("input_tokens") or usage.get("prompt_tokens", 0)
+                            if inp:
+                                usage_info["input_tokens"] = inp
+                            out = usage.get("output_tokens") or usage.get("completion_tokens", 0)
+                            if out:
+                                usage_info["output_tokens"] = out
 
                     elif event_type == "content_block_start":
                         block = data.get("content_block", {})
