@@ -1,27 +1,28 @@
 # Langfuse 可观测性配置与验证
 
-FlyinChat 的 Langfuse 集成以“一次用户任务 = 一个 trace”为边界：每次在 TUI 中发送一条用户请求，都会记录 agent 主循环、LLM generation、工具调用、权限结果、质量 scores 与工程指标。
+FlyinChat 的 Langfuse 集成以"一次用户任务 = 一个 trace"为边界：每次在 TUI 中发送一条用户请求，都会记录 agent 主循环、LLM generation、工具调用、权限结果、质量 scores 与工程指标。
+
+所有 Langfuse 配置均存储于 `~/.flyinchat/config.json` 的 `app_settings` 字段中，无需 `.env` 文件。
 
 ## 开启 Langfuse
 
-1. 复制示例配置：
+1. 编辑 `~/.flyinchat/config.json`，在 `app_settings` 中添加：
 
-   ```bash
-   cp .env.example .env
+   ```json
+   {
+     "app_settings": {
+       "langfuse_enabled": "true",
+       "langfuse_public_key": "pk-lf-...",
+       "langfuse_secret_key": "sk-lf-...",
+       "langfuse_host": "https://cloud.langfuse.com",
+       "langfuse_debug": "false",
+       "agent_env": "development",
+       "agent_version": "local"
+     }
+   }
    ```
 
-2. 编辑本地 `.env`，填入 Langfuse 凭据：
-
-   ```text
-   LANGFUSE_PUBLIC_KEY=pk-lf-...
-   LANGFUSE_SECRET_KEY=sk-lf-...
-   LANGFUSE_HOST=https://cloud.langfuse.com
-   LANGFUSE_ENABLED=true
-   LANGFUSE_DEBUG=false
-
-   AGENT_ENV=development
-   AGENT_VERSION=local
-   ```
+2. 也可以在 TUI 中使用 `/langfuse` 命令快速切换 `langfuse_enabled`（需要先在 config.json 中填入 key）。
 
 3. 启动 FlyinChat：
 
@@ -29,24 +30,15 @@ FlyinChat 的 Langfuse 集成以“一次用户任务 = 一个 trace”为边界
    python -m flyinchat
    ```
 
-> `.env` 和 `.env.*` 已被 `.gitignore` 忽略；不要把真实 key 写入仓库文件。
-
 ## 关闭 Langfuse
 
 任选一种方式：
 
-```text
-LANGFUSE_ENABLED=false
-```
+- 在 TUI 中输入 `/langfuse` 切换
+- 或手动编辑 `~/.flyinchat/config.json`，将 `langfuse_enabled` 设为 `"false"`
+- 或删除 `langfuse_public_key` / `langfuse_secret_key`
 
-或删除/留空：
-
-```text
-LANGFUSE_PUBLIC_KEY=
-LANGFUSE_SECRET_KEY=
-```
-
-缺少 key 或 SDK 初始化失败时，FlyinChat 会自动使用 noop observability client，不会阻止 TUI 启动或任务执行。
+缺少 key 或 SDK 初始化失败时，FlyinChat 会自动使用 noop observability client，不会阻止 TUI 启动或任务执行。状态栏会显示 `Langfuse: OFF`。
 
 ## 会上传哪些内容
 
@@ -83,9 +75,9 @@ FlyinChat 只上传便于回放和评估的摘要信息：
 
 ## 简单验证方式
 
-1. 设置 `.env` 中 `LANGFUSE_ENABLED=true` 并填入 key。
-2. 运行 `python -m flyinchat`。
+1. 在 `~/.flyinchat/config.json` 的 `app_settings` 中设置 `langfuse_enabled: "true"` 并填入 key。
+2. 运行 `python -m flyinchat`，状态栏应显示 `Langfuse: ON`。
 3. 发送一条普通问题，Langfuse 中应出现 `flyinchat.user_task` trace。
 4. 发送一个会触发 `file_read` 的请求，trace 中应出现 `tool.file_read` span。
 5. 发送一个需要 bash 权限的请求，trace 中应记录 `requires_approval=true` 和最终 `approval_status`。
-6. 设置 `LANGFUSE_ENABLED=false` 后重启，确认 FlyinChat 仍能正常运行，只是不再上传 trace。
+6. 使用 `/langfuse` 命令切换关闭，确认状态栏变为 `Langfuse: OFF`，FlyinChat 仍能正常运行。

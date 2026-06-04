@@ -110,8 +110,7 @@ ZH: dict[TKey, str] = {
     TKey.PANEL_INIT_DONE: "FLYINCHAT.md 已生成到工作区根目录。",
     TKey.PANEL_SKILLS: "Agent Skills",
     TKey.PANEL_SKILLS_EMPTY: "未加载任何 skill。请在工作区 `skills/**/SKILL.md` 或 `~/.flyinchat/skills` 下添加 SKILL.md 文件。",
-    TKey.PANEL_LANGFUSE_NO_ENV: "工作区根目录中未找到 `.env` 文件。请先创建一个。",
-    TKey.PANEL_LANGFUSE_IO_ERROR: "无法写入 `.env` 文件。请检查文件权限。",
+    TKey.PANEL_NO_CONFIG: "配置文件不可用。请确保 `~/.flyinchat/config.json` 存在。",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API 密钥",

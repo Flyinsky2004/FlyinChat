@@ -174,28 +174,33 @@ class AgentTrace:
             "last_tool_error": result.last_tool_error,
             "ended_at": time.time(),
         }
+        output_data = {
+            "final_answer": result.final_text,
+            "status": result.status,
+            "error_message": result.error,
+            "total_steps": self.metrics.total_steps,
+            "total_tool_calls": self.metrics.tool_call_count,
+            "total_llm_calls": self.metrics.llm_call_count,
+            "total_latency_ms": task_latency_ms,
+        }
+        # end agent.loop span
         self.client.end_span(
             self.span_ref,
-            output={
-                "final_answer": result.final_text,
-                "status": result.status,
-                "error_message": result.error,
-                "total_steps": self.metrics.total_steps,
-                "total_tool_calls": self.metrics.tool_call_count,
-                "total_llm_calls": self.metrics.llm_call_count,
-                "total_latency_ms": task_latency_ms,
-            },
+            output=output_data,
             metadata=metadata,
             status_message=result.error,
         )
+        # score the trace
         for name, value in scores.scores.items():
             self.client.score_trace(self.trace_ref, name=name, value=value)
+        # end root trace observation
         self.client.update_trace(
             self.trace_ref,
             output=result.final_text or result.error or result.status,
             metadata=metadata,
             status_message=result.error,
         )
+        self.client.end_span(self.trace_ref)
         self.client.flush()
 
 

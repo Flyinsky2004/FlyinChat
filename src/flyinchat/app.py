@@ -20,7 +20,12 @@ from .i18n import I18nStore, Language, TKey
 from .logging_config import configure_logging
 from .message_utils import message_to_api_format, message_to_display
 from .models import LLMChannel, LLMModel, TurnResult
-from .observability import ObservabilityClient, create_observability_client
+from .observability import (
+    NoopObservabilityClient,
+    ObservabilityClient,
+    create_observability_client,
+)
+from .observability.config import ObservabilityConfig
 from .observability.tracing import AgentTrace
 from .paths import AppPaths
 from .prompt_assembler import mode_int_to_str
@@ -104,7 +109,10 @@ class FlyinChatApp(App[None]):
         super().__init__()
         self.i18n = I18nStore()
         self.paths = paths
-        self._observability_client = observability_client or create_observability_client()
+        self._injected_observability_client = observability_client
+        self._observability_client: ObservabilityClient = (
+            observability_client or NoopObservabilityClient()
+        )
         self.active_conversation_id: str | None = None
         self.selection_context: str | None = None
         self.selection_title = ""
@@ -306,6 +314,7 @@ class FlyinChatApp(App[None]):
     def compose(self) -> ComposeResult:
         self.paths = initialize_storage(self.paths)
         self._load_language()
+        self._init_observability()
         self._init_tools()
 
         t = self.i18n.t
@@ -332,6 +341,16 @@ class FlyinChatApp(App[None]):
                 self.i18n.set_language(Language(stored))
             except ValueError:
                 pass
+
+    def _init_observability(self) -> None:
+        if self._injected_observability_client is not None:
+            return  # already set in __init__
+        if self.paths is not None:
+            self._observability_client = create_observability_client(
+                config_path=self.paths.config_path,
+            )
+        else:
+            self._observability_client = create_observability_client()
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
@@ -853,25 +872,16 @@ class FlyinChatApp(App[None]):
 
     def _toggle_langfuse(self) -> None:
         t = self.i18n.t
-        env_path = self.paths.project_dir.parent / ".env" if self.paths else None
-        if env_path is None or not env_path.exists():
-            self._show_panel(t(TKey.CMD_LANGFUSE), t(TKey.PANEL_LANGFUSE_NO_ENV))
+        if self.paths is None:
+            self._show_panel(t(TKey.CMD_LANGFUSE), t(TKey.PANEL_NO_CONFIG))
             return
 
         currently_enabled = self._observability_client.enabled
         new_value = "false" if currently_enabled else "true"
 
-        try:
-            content = env_path.read_text()
-            new_content = _set_env_var(content, "LANGFUSE_ENABLED", new_value)
-            env_path.write_text(new_content)
-        except OSError:
-            self._show_panel(t(TKey.CMD_LANGFUSE), t(TKey.PANEL_LANGFUSE_IO_ERROR))
-            return
+        set_app_setting(self.paths.config_path, "langfuse_enabled", new_value)
 
-        # Recreate the observability client with new config
-        from .observability.config import ObservabilityConfig
-        new_config = ObservabilityConfig.from_env(env_path)
+        new_config = ObservabilityConfig.from_config_store(self.paths.config_path)
         self._observability_client = create_observability_client(new_config)
         self._query_engine = None  # force rebuild to pick up new client
 
@@ -2402,21 +2412,6 @@ class FlyinChatApp(App[None]):
         if len(api_key) <= 6:
             return self.i18n.t(TKey.MISC_CONFIGURED)
         return f"{api_key[:3]}...{api_key[-2:]}"
-
-
-def _set_env_var(content: str, key: str, value: str) -> str:
-    """Set or update an environment variable in a .env file content."""
-    lines = content.splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(f"{key}=") or stripped.startswith(f"# {key}=") or stripped.startswith(f"#{key}="):
-            lines[i] = f"{key}={value}"
-            found = True
-            break
-    if not found:
-        lines.append(f"{key}={value}")
-    return "\n".join(lines) + "\n"
 
 def run() -> None:
     configure_logging()

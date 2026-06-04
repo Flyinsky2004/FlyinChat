@@ -110,8 +110,7 @@ EN: dict[TKey, str] = {
     TKey.PANEL_INIT_DONE: "FLYINCHAT.md has been generated in the workspace root.",
     TKey.PANEL_SKILLS: "Agent Skills",
     TKey.PANEL_SKILLS_EMPTY: "No skills loaded. Add SKILL.md files under `skills/**/SKILL.md` in the workspace or `~/.flyinchat/skills`.",
-    TKey.PANEL_LANGFUSE_NO_ENV: "No `.env` file found in the workspace root. Please create one first.",
-    TKey.PANEL_LANGFUSE_IO_ERROR: "Failed to write `.env` file. Check file permissions.",
+    TKey.PANEL_NO_CONFIG: "Config file not available. Please ensure `~/.flyinchat/config.json` exists.",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API key",

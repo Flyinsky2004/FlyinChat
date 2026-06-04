@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,16 +21,16 @@ class ObservabilityConfig:
         return bool(self.public_key and self.secret_key)
 
     @classmethod
-    def from_env(cls, env_path: Path | None = None) -> "ObservabilityConfig":
-        _load_dotenv(env_path)
+    def from_config_store(cls, config_path: Path) -> "ObservabilityConfig":
+        settings = _load_app_settings(config_path)
 
-        enabled = _env_bool("LANGFUSE_ENABLED", default=False)
-        public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
-        secret_key = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
-        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").strip()
-        debug = _env_bool("LANGFUSE_DEBUG", default=False)
-        agent_env = os.getenv("AGENT_ENV", "development").strip() or "development"
-        agent_version = os.getenv("AGENT_VERSION", "local").strip() or "local"
+        enabled = _bool_setting(settings, "langfuse_enabled", default=False)
+        public_key = settings.get("langfuse_public_key", "").strip()
+        secret_key = settings.get("langfuse_secret_key", "").strip()
+        host = settings.get("langfuse_host", "https://cloud.langfuse.com").strip() or "https://cloud.langfuse.com"
+        debug = _bool_setting(settings, "langfuse_debug", default=False)
+        agent_env = settings.get("agent_env", "development").strip() or "development"
+        agent_version = settings.get("agent_version", "local").strip() or "local"
 
         if not enabled:
             return cls(
@@ -41,7 +41,7 @@ class ObservabilityConfig:
                 debug=debug,
                 agent_env=agent_env,
                 agent_version=agent_version,
-                disabled_reason="LANGFUSE_ENABLED is false",
+                disabled_reason="langfuse_enabled is false",
             )
 
         if not public_key or not secret_key:
@@ -67,20 +67,21 @@ class ObservabilityConfig:
         )
 
 
-def _env_bool(name: str, *, default: bool) -> bool:
-    raw = os.getenv(name)
+def _load_app_settings(config_path: Path) -> dict[str, str]:
+    if not config_path.exists():
+        return {}
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    raw = data.get("app_settings", {})
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _bool_setting(settings: dict[str, str], key: str, *, default: bool) -> bool:
+    raw = settings.get(key)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on", "y"}
-
-
-def _load_dotenv(env_path: Path | None) -> None:
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        return
-
-    if env_path is not None:
-        load_dotenv(env_path)
-        return
-    load_dotenv()

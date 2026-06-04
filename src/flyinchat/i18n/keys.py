@@ -111,8 +111,7 @@ class TKey(StrEnum):
     PANEL_INIT_DONE = "panel.init.done"
     PANEL_SKILLS = "panel.skills"
     PANEL_SKILLS_EMPTY = "panel.skills.empty"
-    PANEL_LANGFUSE_NO_ENV = "panel.langfuse.no_env"
-    PANEL_LANGFUSE_IO_ERROR = "panel.langfuse.io_error"
+    PANEL_NO_CONFIG = "panel.no_config"
 
     # ── API form ──
     FORM_DEEPSEEK_KEY = "form.deepseek.key"
