@@ -29,6 +29,8 @@ class TKey(StrEnum):
     CMD_MCP_DESC = "cmd.mcp.desc"
     CMD_SKILLS = "cmd.skills"
     CMD_SKILLS_DESC = "cmd.skills.desc"
+    CMD_LANGFUSE = "cmd.langfuse"
+    CMD_LANGFUSE_DESC = "cmd.langfuse.desc"
 
     # ── Reasoning levels ──
     REASONING_LOW = "reasoning.low"
@@ -109,6 +111,8 @@ class TKey(StrEnum):
     PANEL_INIT_DONE = "panel.init.done"
     PANEL_SKILLS = "panel.skills"
     PANEL_SKILLS_EMPTY = "panel.skills.empty"
+    PANEL_LANGFUSE_NO_ENV = "panel.langfuse.no_env"
+    PANEL_LANGFUSE_IO_ERROR = "panel.langfuse.io_error"
 
     # ── API form ──
     FORM_DEEPSEEK_KEY = "form.deepseek.key"
@@ -170,6 +174,8 @@ class TKey(StrEnum):
     STATUS_MODE_AUTO_EDIT = "status.mode.auto_edit"
     STATUS_MODE_YOLO = "status.mode.yolo"
     STATUS_MODE_PLAN = "status.mode.plan"
+    STATUS_LANGFUSE_ON = "status.langfuse.on"
+    STATUS_LANGFUSE_OFF = "status.langfuse.off"
 
     # ── Thinking / Effort hints ──
     HINT_THINKING_ON = "hint.thinking.on"

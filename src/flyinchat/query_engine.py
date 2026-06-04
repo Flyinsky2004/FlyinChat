@@ -10,6 +10,8 @@ from uuid import uuid4
 from .api_client import stream_chat_completion
 from .compact import CompactionEngine, CompactionPolicy, TokenEstimator
 from .message_utils import message_to_api_format, sanitize_api_messages
+from .observability import ObservabilityClient
+from .observability.tracing import AgentTrace, ToolTrace
 from .prompt_assembler import assemble_system_prompt
 from .models import LLMChannel, LLMModel, Message, TurnResult
 from .skills import CompiledSkill, SkillCompiler, SkillRegistry, SkillResolver
@@ -53,6 +55,7 @@ class QueryEngineConfig:
     enable_auto_continue: bool = True
     max_auto_continues: int = 3
     auto_continue_turns: int = 10
+    observability_client: ObservabilityClient | None = None
 
 
 class QueryEngine:
@@ -68,6 +71,7 @@ class QueryEngine:
         self._cancel_event = asyncio.Event()
         self._skill_resolver = SkillResolver()
         self._skill_compiler = SkillCompiler()
+        self._active_trace: AgentTrace | None = None
 
     def request_cancel(self) -> None:
         self._cancel_event.set()
@@ -116,6 +120,17 @@ class QueryEngine:
         await self._emit(on_event, TurnEvent(turn_id, "turn_start", {"turn_number": turn_number}))
 
         primary = get_primary_llm_model(self.config.paths.config_path)
+        trace = AgentTrace.start(
+            self.config.observability_client,
+            turn_id=turn_id,
+            conversation_id=self.config.conversation_id,
+            user_input=user_content,
+            workspace=self.config.paths.project_dir.parent,
+            agent_mode=self.mode,
+            permission_mode=self.mode,
+            model_name=primary[1].name if primary is not None else "unknown",
+        )
+        self._active_trace = trace
         if primary is None:
             err_msg = "No model configured. Add one with /api, then /model."
             await self._emit(
@@ -123,13 +138,18 @@ class QueryEngine:
                 TurnEvent(turn_id, "error", {"message": err_msg}),
             )
             logger.warning("submit_message no model configured", extra={"turn_id": turn_id})
-            return TurnResult(
+            result = TurnResult(
                 turn_id=turn_id,
                 status="error",
                 error=err_msg,
             )
+            elapsed_ms = int((time.time() - t_start) * 1000)
+            trace.finish(result, task_latency_ms=elapsed_ms)
+            self._active_trace = None
+            return result
 
         channel, model = primary
+        trace.update_model(model)
         try:
             result = await self._run_turn(turn_id, channel, model, on_event)
         except Exception as exc:
@@ -138,14 +158,20 @@ class QueryEngine:
                 on_event,
                 TurnEvent(turn_id, "error", {"message": str(exc)}),
             )
-            return TurnResult(
+            result = TurnResult(
                 turn_id=turn_id,
                 status="error",
                 error=str(exc),
                 tool_rounds=0,
             )
+            elapsed_ms = int((time.time() - t_start) * 1000)
+            trace.finish(result, task_latency_ms=elapsed_ms)
+            self._active_trace = None
+            return result
 
         elapsed_ms = int((time.time() - t_start) * 1000)
+        trace.finish(result, task_latency_ms=elapsed_ms)
+        self._active_trace = None
         logger.info(
             "turn complete",
             extra={
@@ -211,7 +237,9 @@ class QueryEngine:
         if self.config.enable_auto_compact:
             policy = CompactionPolicy.from_model(model)
             engine = CompactionEngine(
-                self.config.paths.chat_path, self.config.conversation_id
+                self.config.paths.chat_path,
+                self.config.conversation_id,
+                _observability=self._active_trace,
             )
             await self._emit(
                 on_event, TurnEvent(turn_id, "compact_start", {"strategy": "preflight"})
@@ -227,6 +255,11 @@ class QueryEngine:
                     for msg in active_messages
                     if (formatted := message_to_api_format(msg)) is not None
                 ])
+                if self._active_trace is not None:
+                    self._active_trace.mark_compaction(
+                        tokens_before=compact_result.tokens_before,
+                        tokens_after=compact_result.tokens_after,
+                    )
                 logger.info(
                     "preflight compact applied",
                     extra={
@@ -421,6 +454,16 @@ class QueryEngine:
             usage_info: dict = {}
             had_incomplete_tool_call = False
             tools_for_call = [] if finalization_pass else tool_list
+            generation = None
+            generation_error: str | None = None
+            if self._active_trace is not None:
+                generation = self._active_trace.start_generation(
+                    name="llm.agent_turn",
+                    channel=channel,
+                    model=model,
+                    messages=api_messages,
+                    tools_count=len(tools_for_call or []),
+                )
 
             try:
                 async for event in stream_chat_completion(
@@ -488,6 +531,7 @@ class QueryEngine:
                         )
             except Exception as error:
                 error_str = str(error)
+                generation_error = error_str
                 if compact_retry_remaining > 0 and (
                     "context_length_exceeded" in error_str
                     or "413" in error_str
@@ -508,7 +552,9 @@ class QueryEngine:
                         conversation_id=self.config.conversation_id,
                     )
                     reactive_engine = CompactionEngine(
-                        self.config.paths.chat_path, self.config.conversation_id
+                        self.config.paths.chat_path,
+                        self.config.conversation_id,
+                        _observability=self._active_trace,
                     )
                     policy = CompactionPolicy.from_model(model)
                     reactive_result = await reactive_engine.reactive_compact(
@@ -516,6 +562,11 @@ class QueryEngine:
                         reason=error_str,
                     )
                     if reactive_result.applied:
+                        if self._active_trace is not None:
+                            self._active_trace.mark_compaction(
+                                tokens_before=reactive_result.tokens_before,
+                                tokens_after=reactive_result.tokens_after,
+                            )
                         active_messages = list(reactive_result.messages)
                         api_messages[:] = sanitize_api_messages([
                             formatted
@@ -562,6 +613,28 @@ class QueryEngine:
                     total_output_tokens=total_output_tokens,
                     last_input_tokens=total_input_tokens,
                 )
+                if generation is not None:
+                    generation_output = assistant_blocks(thinking_blocks, text_content)
+                    generation_output.extend(
+                        {
+                            "type": "tool_use",
+                            "id": tu["id"],
+                            "name": tu["name"],
+                            "input": tu["input"],
+                        }
+                        for tu in tool_uses
+                    )
+                    generation.finish(
+                        output=generation_output,
+                        usage_info=usage_info,
+                        input_tokens=total_input_tokens,
+                        output_tokens=(
+                            usage_info.get("output_tokens")
+                            or usage_info.get("completion_tokens")
+                            or 0
+                        ),
+                        error=generation_error,
+                    )
 
             num_turns += 1
             pending_tool_results = False
@@ -763,6 +836,24 @@ class QueryEngine:
             },
         )
 
+    def _start_tool_trace(
+        self, tool_name: str, tool_input: dict, tool_use_id: str
+    ) -> ToolTrace | None:
+        if self._active_trace is None:
+            return None
+        risk_level = "medium"
+        if self._tool_registry is not None:
+            try:
+                risk_level = getattr(self._tool_registry.get(tool_name), "risk_level", "medium")
+            except KeyError:
+                risk_level = "medium"
+        return self._active_trace.start_tool(
+            tool_call_id=tool_use_id,
+            tool_name=tool_name,
+            tool_args=tool_input,
+            risk_level=risk_level,
+        )
+
     async def _execute_tool(
         self,
         turn_id: str,
@@ -771,8 +862,13 @@ class QueryEngine:
         tool_use_id: str,
         on_event: Callable[[TurnEvent], Awaitable[None]] | None = None,
     ) -> dict:
+        tool_trace = self._start_tool_trace(tool_name, tool_input, tool_use_id)
         if self._tool_executor is None or self._tool_context is None:
             result_text = "Tool system not initialized"
+            if tool_trace is not None:
+                tool_trace.finish(
+                    ToolResult(ok=False, content=result_text, error_code="TOOL_NOT_INITIALIZED")
+                )
             add_message_with_turn(
                 self.config.paths.chat_path,
                 conversation_id=self.config.conversation_id,
@@ -798,16 +894,18 @@ class QueryEngine:
         result = await self._tool_executor.execute(tool_name, tool_input, self._tool_context)
 
         if result.error_code == PERMISSION_REQUIRED:
+            if tool_trace is not None:
+                tool_trace.with_approval_required()
             return await self._handle_permission_required(
-                turn_id, tool_name, tool_input, tool_use_id, result, on_event
+                turn_id, tool_name, tool_input, tool_use_id, result, on_event, tool_trace
             )
 
         if result.error_code == USER_INPUT_REQUIRED:
             return await self._handle_user_input_required(
-                turn_id, tool_name, tool_input, tool_use_id, result, on_event
+                turn_id, tool_name, tool_input, tool_use_id, result, on_event, tool_trace
             )
 
-        return self._persist_tool_result(turn_id, tool_name, tool_use_id, result)
+        return self._persist_tool_result(turn_id, tool_name, tool_use_id, result, tool_trace)
 
     async def _handle_permission_required(
         self,
@@ -817,6 +915,7 @@ class QueryEngine:
         tool_use_id: str,
         execute_result: Any,
         on_event: Callable[[TurnEvent], Awaitable[None]] | None = None,
+        tool_trace: ToolTrace | None = None,
     ) -> dict:
         tool = self._tool_registry.get(tool_name)
         risk_level = getattr(tool, "risk_level", "medium")
@@ -892,6 +991,8 @@ class QueryEngine:
                     self._permission_store.update_status(
                         request.request_id, RequestStatus.EXECUTED
                     )
+                if tool_trace is not None:
+                    tool_trace.set_approval_status("executed")
                 self._write_permission_transcript(
                     turn_id, "permission_effect_applied",
                     request_id=request.request_id, outcome="executed",
@@ -901,13 +1002,15 @@ class QueryEngine:
                     self._permission_store.update_status(
                         request.request_id, RequestStatus.FAILED_AFTER_APPROVAL
                     )
+                if tool_trace is not None:
+                    tool_trace.set_approval_status("failed_after_approval")
                 self._write_permission_transcript(
                     turn_id, "permission_effect_applied",
                     request_id=request.request_id,
                     outcome="failed",
                     error=exec_result.content,
                 )
-            return self._persist_tool_result(turn_id, tool_name, tool_use_id, exec_result)
+            return self._persist_tool_result(turn_id, tool_name, tool_use_id, exec_result, tool_trace)
 
         if resolution == "always_approve":
             cmd = tool_input.get("command", "").strip()
@@ -938,6 +1041,8 @@ class QueryEngine:
                     self._permission_store.update_status(
                         request.request_id, RequestStatus.EXECUTED
                     )
+                if tool_trace is not None:
+                    tool_trace.set_approval_status("executed")
                 self._write_permission_transcript(
                     turn_id, "permission_effect_applied",
                     request_id=request.request_id, outcome="executed",
@@ -947,13 +1052,15 @@ class QueryEngine:
                     self._permission_store.update_status(
                         request.request_id, RequestStatus.FAILED_AFTER_APPROVAL
                     )
+                if tool_trace is not None:
+                    tool_trace.set_approval_status("failed_after_approval")
                 self._write_permission_transcript(
                     turn_id, "permission_effect_applied",
                     request_id=request.request_id,
                     outcome="failed",
                     error=exec_result.content,
                 )
-            return self._persist_tool_result(turn_id, tool_name, tool_use_id, exec_result)
+            return self._persist_tool_result(turn_id, tool_name, tool_use_id, exec_result, tool_trace)
 
         if resolution == "deny":
             self._permission_store.update_status(
@@ -968,7 +1075,9 @@ class QueryEngine:
                 content=f"User denied permission for {tool_name}",
                 error_code="PERMISSION_DENIED",
             )
-            return self._persist_tool_result(turn_id, tool_name, tool_use_id, deny_result)
+            if tool_trace is not None:
+                tool_trace.set_approval_status("denied")
+            return self._persist_tool_result(turn_id, tool_name, tool_use_id, deny_result, tool_trace)
 
         # timeout
         self._permission_store.update_status(
@@ -983,7 +1092,9 @@ class QueryEngine:
             content=f"Permission request timed out for {tool_name}",
             error_code="PERMISSION_DENIED",
         )
-        return self._persist_tool_result(turn_id, tool_name, tool_use_id, timeout_result)
+        if tool_trace is not None:
+            tool_trace.set_approval_status("timeout")
+        return self._persist_tool_result(turn_id, tool_name, tool_use_id, timeout_result, tool_trace)
 
     async def _handle_user_input_required(
         self,
@@ -993,6 +1104,7 @@ class QueryEngine:
         tool_use_id: str,
         execute_result: Any,
         on_event: Callable[[TurnEvent], Awaitable[None]] | None = None,
+        tool_trace: ToolTrace | None = None,
     ) -> dict:
         questions = execute_result.meta.get("questions", [])
         user_input_id = str(uuid4())
@@ -1025,7 +1137,7 @@ class QueryEngine:
             ok=True,
             content=json.dumps(answers, ensure_ascii=False),
         )
-        return self._persist_tool_result(turn_id, tool_name, tool_use_id, result)
+        return self._persist_tool_result(turn_id, tool_name, tool_use_id, result, tool_trace)
 
     def resolve_user_input(self, request_id: str, answers: dict) -> bool:
         future = self._pending_user_inputs.get(request_id)
@@ -1039,8 +1151,15 @@ class QueryEngine:
         return True
 
     def _persist_tool_result(
-        self, turn_id: str, tool_name: str, tool_use_id: str, result: Any
+        self,
+        turn_id: str,
+        tool_name: str,
+        tool_use_id: str,
+        result: Any,
+        tool_trace: ToolTrace | None = None,
     ) -> dict:
+        if tool_trace is not None:
+            tool_trace.finish(result)
         add_message_with_turn(
             self.config.paths.chat_path,
             conversation_id=self.config.conversation_id,

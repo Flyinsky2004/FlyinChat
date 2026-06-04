@@ -9,8 +9,10 @@ description = "A Textual application."
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28.0",
-    "textual>=0.86.0",
+    "langfuse>=3.0.0",
     "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "textual>=0.86.0",
 ]
 
 [project.optional-dependencies]

@@ -28,6 +28,8 @@ ZH: dict[TKey, str] = {
     TKey.CMD_MCP_DESC: "查看 MCP 服务器状态与工具列表",
     TKey.CMD_SKILLS: "/skills",
     TKey.CMD_SKILLS_DESC: "查看已加载的 Agent Skills",
+    TKey.CMD_LANGFUSE: "/langfuse",
+    TKey.CMD_LANGFUSE_DESC: "切换 Langfuse 可观测性（开/关）",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "快速，最少推理",
@@ -108,6 +110,8 @@ ZH: dict[TKey, str] = {
     TKey.PANEL_INIT_DONE: "FLYINCHAT.md 已生成到工作区根目录。",
     TKey.PANEL_SKILLS: "Agent Skills",
     TKey.PANEL_SKILLS_EMPTY: "未加载任何 skill。请在工作区 `skills/**/SKILL.md` 或 `~/.flyinchat/skills` 下添加 SKILL.md 文件。",
+    TKey.PANEL_LANGFUSE_NO_ENV: "工作区根目录中未找到 `.env` 文件。请先创建一个。",
+    TKey.PANEL_LANGFUSE_IO_ERROR: "无法写入 `.env` 文件。请检查文件权限。",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API 密钥",
@@ -169,6 +173,8 @@ ZH: dict[TKey, str] = {
     TKey.STATUS_MODE_AUTO_EDIT: "自动",
     TKey.STATUS_MODE_YOLO: "YOLO",
     TKey.STATUS_MODE_PLAN: "计划",
+    TKey.STATUS_LANGFUSE_ON: "Langfuse: 开",
+    TKey.STATUS_LANGFUSE_OFF: "Langfuse: 关",
 
     # ── Thinking / Effort hints ──
     TKey.HINT_THINKING_ON: "> 思考已**启用** — {channel} / {model}",

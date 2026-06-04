@@ -22,6 +22,24 @@ from flyinchat.storage import (
 )
 
 
+class FakeGeneration:
+    def __init__(self, trace) -> None:
+        self.trace = trace
+
+    def finish(self, **kwargs) -> None:
+        self.trace.finished_generations.append(kwargs)
+
+
+class FakeTrace:
+    def __init__(self) -> None:
+        self.started_generations: list[dict] = []
+        self.finished_generations: list[dict] = []
+
+    def start_generation(self, **kwargs):
+        self.started_generations.append(kwargs)
+        return FakeGeneration(self)
+
+
 def test_token_estimator_basic() -> None:
     est = TokenEstimator()
     # "hello world" = 11 ASCII chars → 11 * 0.3 = 3
@@ -252,6 +270,49 @@ def test_compaction_output_dataclass() -> None:
     )
     assert output.applied is False
     assert output.boundary_message is None
+
+
+def test_autocompact_records_summary_generation(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    async def run():
+        paths = initialize_storage(resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project"))
+        conv = create_conversation(paths.chat_path, title="Test")
+        add_message(paths.chat_path, conversation_id=conv.id, role="user", content="old")
+        add_message(paths.chat_path, conversation_id=conv.id, role="assistant", content="reply")
+        add_message(paths.chat_path, conversation_id=conv.id, role="user", content="new")
+
+        async def fake_chat_completion(channel, model, messages, max_tokens):
+            return "summary"
+
+        monkeypatch.setattr("flyinchat.compact.chat_completion", fake_chat_completion)
+        trace = FakeTrace()
+        engine = CompactionEngine(paths.chat_path, conv.id, _observability=trace)
+        model = LLMModel(id="m1", channel_id="c1", name="m", is_default=True, context_window=10)
+        channel = LLMChannel(
+            id="c1",
+            name="c",
+            provider_type="anthropic",
+            base_url=None,
+            api_key="sk-test",
+            created_at="",
+            updated_at="",
+        )
+
+        result = await engine._autocompact(
+            list_messages(paths.chat_path, conversation_id=conv.id),
+            [],
+            CompactionPolicy(context_window=10, preserve_turns=1),
+            model,
+            channel,
+            100,
+        )
+
+        assert result.applied is True
+        assert trace.started_generations[0]["name"] == "llm.compaction_summary"
+        assert trace.finished_generations[0]["output"] == "summary"
+
+    asyncio.run(run())
 
 
 def test_autocompact_summary_preserves_skill_state(tmp_path: Path, monkeypatch) -> None:

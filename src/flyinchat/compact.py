@@ -10,6 +10,7 @@ from uuid import uuid4
 from flyinchat.api_client import chat_completion
 from flyinchat.i18n import I18nStore, TKey
 from flyinchat.models import LLMChannel, LLMModel, Message
+from flyinchat.observability.tracing import AgentTrace
 from flyinchat.storage import (
     add_message,
     list_messages,
@@ -101,6 +102,7 @@ class CompactionEngine:
     _conversation_id: str
     _estimator: TokenEstimator = field(default_factory=TokenEstimator)
     _i18n: I18nStore = field(default_factory=I18nStore)
+    _observability: AgentTrace | None = None
 
     def compact_if_needed(
         self,
@@ -400,4 +402,33 @@ class CompactionEngine:
             {"role": "user", "content": summary_prompt},
         ]
 
-        return await chat_completion(channel, model, summary_messages, max_tokens=2048)
+        generation = None
+        if self._observability is not None:
+            generation = self._observability.start_generation(
+                name="llm.compaction_summary",
+                channel=channel,
+                model=model,
+                messages=summary_messages,
+                tools_count=0,
+                max_tokens=2048,
+            )
+        try:
+            summary = await chat_completion(channel, model, summary_messages, max_tokens=2048)
+        except Exception as exc:
+            if generation is not None:
+                generation.finish(
+                    output="",
+                    usage_info={},
+                    input_tokens=self._estimator.estimate_api_messages(summary_messages),
+                    output_tokens=0,
+                    error=str(exc),
+                )
+            raise
+        if generation is not None:
+            generation.finish(
+                output=summary,
+                usage_info={},
+                input_tokens=self._estimator.estimate_api_messages(summary_messages),
+                output_tokens=self._estimator.estimate(summary),
+            )
+        return summary

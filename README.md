@@ -92,6 +92,10 @@ flyinchat
 
 所有数据以 JSON 格式存储，使用原子写入保证数据安全。
 
+## Langfuse 可观测性
+
+FlyinChat 可选接入 Langfuse，按“一次用户任务 = 一个 trace”记录 agent 主循环、LLM 调用、工具调用、权限结果和质量指标。配置方式见 [docs/langfuse/langfuse-setup.md](docs/langfuse/langfuse-setup.md)。
+
 ## 开发
 
 ```bash

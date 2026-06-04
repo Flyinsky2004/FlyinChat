@@ -48,8 +48,12 @@ def _make_tool_context(workspace: Path) -> ToolContext:
     )
 
 
-def _make_query_engine(paths: AppPaths, conversation_id: str) -> QueryEngine:
-    config = QueryEngineConfig(paths=paths, conversation_id=conversation_id)
+def _make_query_engine(paths: AppPaths, conversation_id: str, observability_client=None) -> QueryEngine:
+    config = QueryEngineConfig(
+        paths=paths,
+        conversation_id=conversation_id,
+        observability_client=observability_client,
+    )
     engine = QueryEngine(config)
 
     registry = ToolRegistry()
@@ -68,6 +72,47 @@ async def _collect_events(engine, prompt):
 
     result = await engine.submit_message(prompt, on_event=on_event)
     return result, events
+
+
+class FakeObservabilityClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.flush_count = 0
+        self.shutdown_count = 0
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def start_trace(self, **kwargs):
+        self.calls.append(("start_trace", kwargs))
+        return {"kind": "trace", "id": len(self.calls)}
+
+    def update_trace(self, trace_ref, **kwargs) -> None:
+        self.calls.append(("update_trace", kwargs))
+
+    def start_span(self, trace_ref, **kwargs):
+        self.calls.append(("start_span", kwargs))
+        return {"kind": "span", "id": len(self.calls)}
+
+    def end_span(self, span_ref, **kwargs) -> None:
+        self.calls.append(("end_span", kwargs))
+
+    def start_generation(self, trace_ref, **kwargs):
+        self.calls.append(("start_generation", kwargs))
+        return {"kind": "generation", "id": len(self.calls)}
+
+    def end_generation(self, generation_ref, **kwargs) -> None:
+        self.calls.append(("end_generation", kwargs))
+
+    def score_trace(self, trace_ref, **kwargs) -> None:
+        self.calls.append(("score_trace", kwargs))
+
+    def flush(self) -> None:
+        self.flush_count += 1
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
 
 
 class TestQueryEngineBasic:
@@ -655,6 +700,107 @@ class TestQueryEngineBasic:
                 mock_compact.return_value.applied = False
                 result, _ = await _collect_events(engine, "run grep")
                 assert result.last_tool_error == "NONZERO_EXIT"
+
+        asyncio.run(run())
+
+    def test_observability_records_trace_generation_scores_and_flush(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            conv = create_conversation(paths.chat_path, title="test")
+            fake = FakeObservabilityClient()
+            engine = _make_query_engine(paths, conv.id, fake)
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                usage_info["completion_tokens"] = 7
+                usage_info["prompt_tokens"] = 3
+                yield {"type": "text", "content": "observed"}
+                return
+
+            with (
+                patch("flyinchat.query_engine.stream_chat_completion", side_effect=mock_stream),
+                patch("flyinchat.query_engine.CompactionEngine.compact_if_needed_async", new_callable=AsyncMock) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "hello")
+
+            assert result.status == "completed"
+            call_names = [name for name, _ in fake.calls]
+            assert "start_trace" in call_names
+            assert "start_generation" in call_names
+            assert "end_generation" in call_names
+            assert "score_trace" in call_names
+            assert fake.flush_count == 1
+
+        asyncio.run(run())
+
+    def test_observability_records_tool_span(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = _setup_storage(tmp_path)
+            workspace = paths.project_dir
+            workspace.mkdir(parents=True, exist_ok=True)
+            test_file = workspace / "test.txt"
+            test_file.write_text("file content here")
+            conv = create_conversation(paths.chat_path, title="test")
+            fake = FakeObservabilityClient()
+            engine = _make_query_engine(paths, conv.id, fake)
+            call_count = 0
+
+            async def mock_stream(channel, model, messages, usage_info, tools):
+                nonlocal call_count
+                call_count += 1
+                usage_info["completion_tokens"] = 7
+                usage_info["prompt_tokens"] = 3
+                if call_count == 1:
+                    yield {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "file_read",
+                        "input": {"path": "test.txt"},
+                    }
+                else:
+                    yield {"type": "text", "content": "done"}
+                return
+
+            with (
+                patch("flyinchat.query_engine.stream_chat_completion", side_effect=mock_stream),
+                patch("flyinchat.query_engine.CompactionEngine.compact_if_needed_async", new_callable=AsyncMock) as mock_compact,
+            ):
+                mock_compact.return_value.applied = False
+                result, _ = await _collect_events(engine, "read file")
+
+            assert result.status == "completed"
+            tool_spans = [payload for name, payload in fake.calls if name == "start_span" and payload["name"] == "tool.file_read"]
+            assert tool_spans
+            ended_tool_spans = [payload for name, payload in fake.calls if name == "end_span" and payload.get("metadata", {}).get("tool_name") == "file_read"]
+            assert ended_tool_spans
+            assert ended_tool_spans[0]["metadata"]["status"] == "success"
+
+        asyncio.run(run())
+
+    def test_observability_records_no_model_trace(self, tmp_path: Path) -> None:
+        import asyncio
+
+        async def run():
+            paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+            initialize_storage(paths)
+            conv = create_conversation(paths.chat_path, title="test")
+            fake = FakeObservabilityClient()
+            engine = QueryEngine(
+                QueryEngineConfig(
+                    paths=paths,
+                    conversation_id=conv.id,
+                    observability_client=fake,
+                )
+            )
+            result, _ = await _collect_events(engine, "hello")
+
+            assert result.status == "error"
+            assert any(name == "start_trace" for name, _ in fake.calls)
+            assert fake.flush_count == 1
 
         asyncio.run(run())
 

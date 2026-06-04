@@ -28,6 +28,8 @@ EN: dict[TKey, str] = {
     TKey.CMD_MCP_DESC: "View MCP server status and tool list",
     TKey.CMD_SKILLS: "/skills",
     TKey.CMD_SKILLS_DESC: "View loaded Agent Skills",
+    TKey.CMD_LANGFUSE: "/langfuse",
+    TKey.CMD_LANGFUSE_DESC: "Toggle Langfuse observability (on/off)",
 
     # ── Reasoning levels ──
     TKey.REASONING_LOW: "Fast, minimal reasoning",
@@ -108,6 +110,8 @@ EN: dict[TKey, str] = {
     TKey.PANEL_INIT_DONE: "FLYINCHAT.md has been generated in the workspace root.",
     TKey.PANEL_SKILLS: "Agent Skills",
     TKey.PANEL_SKILLS_EMPTY: "No skills loaded. Add SKILL.md files under `skills/**/SKILL.md` in the workspace or `~/.flyinchat/skills`.",
+    TKey.PANEL_LANGFUSE_NO_ENV: "No `.env` file found in the workspace root. Please create one first.",
+    TKey.PANEL_LANGFUSE_IO_ERROR: "Failed to write `.env` file. Check file permissions.",
 
     # ── API form ──
     TKey.FORM_DEEPSEEK_KEY: "DeepSeek API key",
@@ -169,6 +173,8 @@ EN: dict[TKey, str] = {
     TKey.STATUS_MODE_AUTO_EDIT: "AUTO EDIT",
     TKey.STATUS_MODE_YOLO: "YOLO",
     TKey.STATUS_MODE_PLAN: "PLAN",
+    TKey.STATUS_LANGFUSE_ON: "Langfuse: ON",
+    TKey.STATUS_LANGFUSE_OFF: "Langfuse: OFF",
 
     # ── Thinking / Effort hints ──
     TKey.HINT_THINKING_ON: "> Thinking is now **enabled** for {channel} / {model}",

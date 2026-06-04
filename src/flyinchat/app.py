@@ -19,7 +19,9 @@ from .file_mentions import MentionSpan, find_active_mention, workspace_path_sugg
 from .i18n import I18nStore, Language, TKey
 from .logging_config import configure_logging
 from .message_utils import message_to_api_format, message_to_display
-from .models import LLMChannel, LLMModel
+from .models import LLMChannel, LLMModel, TurnResult
+from .observability import ObservabilityClient, create_observability_client
+from .observability.tracing import AgentTrace
 from .paths import AppPaths
 from .prompt_assembler import mode_int_to_str
 from .query_engine import QueryEngine, QueryEngineConfig, TurnEvent
@@ -94,10 +96,15 @@ class FlyinChatApp(App[None]):
     TITLE = "FlyinChat"
     SPINNER_FRAMES = ("|", "/", "—", "\\")
 
-    def __init__(self, paths: AppPaths | None = None) -> None:
+    def __init__(
+        self,
+        paths: AppPaths | None = None,
+        observability_client: ObservabilityClient | None = None,
+    ) -> None:
         super().__init__()
         self.i18n = I18nStore()
         self.paths = paths
+        self._observability_client = observability_client or create_observability_client()
         self.active_conversation_id: str | None = None
         self.selection_context: str | None = None
         self.selection_title = ""
@@ -159,6 +166,7 @@ class FlyinChatApp(App[None]):
             SelectionItem("/language", t(TKey.CMD_LANGUAGE), t(TKey.CMD_LANGUAGE_DESC)),
             SelectionItem("/mcp", t(TKey.CMD_MCP), t(TKey.CMD_MCP_DESC)),
             SelectionItem("/skills", t(TKey.CMD_SKILLS), t(TKey.CMD_SKILLS_DESC)),
+            SelectionItem("/langfuse", t(TKey.CMD_LANGFUSE), t(TKey.CMD_LANGFUSE_DESC)),
             SelectionItem("/init", t(TKey.CMD_INIT), t(TKey.CMD_INIT_DESC)),
         )
 
@@ -335,6 +343,7 @@ class FlyinChatApp(App[None]):
             self._mcp_shutdown_event.set()
         if self._mcp_manager is not None:
             await self._mcp_manager.shutdown()
+        self._observability_client.shutdown()
         await super().action_quit()
 
     def _init_tools(self) -> None:
@@ -405,6 +414,7 @@ class FlyinChatApp(App[None]):
                 paths=self.paths,
                 conversation_id=self.active_conversation_id,
                 skill_registry=self._skill_registry,
+                observability_client=self._observability_client,
             )
             self._query_engine = QueryEngine(config)
             self._query_engine.mode = mode_int_to_str(self._mode)
@@ -793,6 +803,8 @@ class FlyinChatApp(App[None]):
                 self._show_mcp_servers()
             case "/skills":
                 self._show_skills()
+            case "/langfuse":
+                self._toggle_langfuse()
             case _:
                 self._show_panel(
                     self.i18n.t(TKey.PANEL_UNKNOWN_CMD),
@@ -837,6 +849,35 @@ class FlyinChatApp(App[None]):
             self.i18n.t(TKey.CMD_LANGUAGE),
             self.i18n.t(TKey.HINT_LANGUAGE_SET),
         )
+        self._render_status_bar()
+
+    def _toggle_langfuse(self) -> None:
+        t = self.i18n.t
+        env_path = self.paths.project_dir.parent / ".env" if self.paths else None
+        if env_path is None or not env_path.exists():
+            self._show_panel(t(TKey.CMD_LANGFUSE), t(TKey.PANEL_LANGFUSE_NO_ENV))
+            return
+
+        currently_enabled = self._observability_client.enabled
+        new_value = "false" if currently_enabled else "true"
+
+        try:
+            content = env_path.read_text()
+            new_content = _set_env_var(content, "LANGFUSE_ENABLED", new_value)
+            env_path.write_text(new_content)
+        except OSError:
+            self._show_panel(t(TKey.CMD_LANGFUSE), t(TKey.PANEL_LANGFUSE_IO_ERROR))
+            return
+
+        # Recreate the observability client with new config
+        from .observability.config import ObservabilityConfig
+        new_config = ObservabilityConfig.from_env(env_path)
+        self._observability_client = create_observability_client(new_config)
+        self._query_engine = None  # force rebuild to pick up new client
+
+        self._clear_selection()
+        status_text = t(TKey.STATUS_LANGFUSE_ON if new_config.enabled else TKey.STATUS_LANGFUSE_OFF)
+        self._show_panel(t(TKey.CMD_LANGFUSE), status_text)
         self._render_status_bar()
 
     def _run_init(self) -> None:
@@ -1625,10 +1666,22 @@ class FlyinChatApp(App[None]):
             if (formatted := self._message_to_api_format(msg)) is not None
         ]
 
+        trace = AgentTrace.start(
+            self._observability_client,
+            turn_id=f"compact_{self.active_conversation_id[:8]}",
+            conversation_id=self.active_conversation_id,
+            user_input="/compact",
+            workspace=self.paths.project_dir.parent,
+            agent_mode=mode_int_to_str(self._mode),
+            permission_mode=mode_int_to_str(self._mode),
+            model_name=model.name,
+        )
+        t_start = time.time()
         engine = CompactionEngine(
             self.paths.chat_path,
             self.active_conversation_id,
             _i18n=self.i18n,
+            _observability=trace,
         )
         self._compacting = True
         self._render_status_bar()
@@ -1636,6 +1689,19 @@ class FlyinChatApp(App[None]):
             active_messages, api_messages, policy, force=True, model=model, channel=channel
         )
         self._compacting = False
+        if result.applied:
+            trace.mark_compaction(
+                tokens_before=result.tokens_before,
+                tokens_after=result.tokens_after,
+            )
+        trace.finish(
+            TurnResult(
+                turn_id=f"compact_{self.active_conversation_id[:8]}",
+                status="completed",
+                final_text=f"compact applied={result.applied} strategy={result.strategy}",
+            ),
+            task_latency_ms=int((time.time() - t_start) * 1000),
+        )
 
         if result.applied:
             before_k = result.tokens_before // 1000
@@ -2208,6 +2274,9 @@ class FlyinChatApp(App[None]):
                 else:
                     parts.append(f"MCP: {connected}/{total}")
 
+        langfuse_label = t(TKey.STATUS_LANGFUSE_ON) if self._observability_client.enabled else t(TKey.STATUS_LANGFUSE_OFF)
+        parts.append(langfuse_label)
+
         _update("  |  ".join(parts))
 
     def _clear_message_view(self) -> None:
@@ -2333,6 +2402,21 @@ class FlyinChatApp(App[None]):
         if len(api_key) <= 6:
             return self.i18n.t(TKey.MISC_CONFIGURED)
         return f"{api_key[:3]}...{api_key[-2:]}"
+
+
+def _set_env_var(content: str, key: str, value: str) -> str:
+    """Set or update an environment variable in a .env file content."""
+    lines = content.splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(f"{key}=") or stripped.startswith(f"# {key}=") or stripped.startswith(f"#{key}="):
+            lines[i] = f"{key}={value}"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}")
+    return "\n".join(lines) + "\n"
 
 def run() -> None:
     configure_logging()

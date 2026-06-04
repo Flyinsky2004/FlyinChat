@@ -28,10 +28,54 @@ from flyinchat.storage import (
 )
 
 
+class FakeObservabilityClient:
+    def __init__(self) -> None:
+        self.shutdown_count = 0
+
+    @property
+    def enabled(self) -> bool:
+        return False
+
+    def start_trace(self, **kwargs):
+        return None
+
+    def update_trace(self, *args, **kwargs) -> None:
+        return None
+
+    def start_span(self, *args, **kwargs):
+        return None
+
+    def end_span(self, *args, **kwargs) -> None:
+        return None
+
+    def start_generation(self, *args, **kwargs):
+        return None
+
+    def end_generation(self, *args, **kwargs) -> None:
+        return None
+
+    def score_trace(self, *args, **kwargs) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+
 def test_app_can_be_created() -> None:
     app = FlyinChatApp()
 
     assert app.title == "FlyinChat"
+
+
+def test_app_accepts_observability_client(tmp_path: Path) -> None:
+    paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+    fake = FakeObservabilityClient()
+    app = FlyinChatApp(paths=paths, observability_client=fake)
+
+    assert app._observability_client is fake
 
 
 def test_app_renders_empty_homepage(tmp_path: Path) -> None:
@@ -48,6 +92,20 @@ def test_app_renders_empty_homepage(tmp_path: Path) -> None:
             assert prompt_input.placeholder == "Ask FlyinChat anything, or type / for commands"
             assert paths.config_path.exists()
             assert paths.chat_path.exists()
+
+    asyncio.run(run_app())
+
+
+def test_app_shutdown_calls_observability_client(tmp_path: Path) -> None:
+    async def run_app() -> None:
+        paths = resolve_app_paths(home=tmp_path / "home", cwd=tmp_path / "project")
+        fake = FakeObservabilityClient()
+        app = FlyinChatApp(paths=paths, observability_client=fake)
+
+        async with app.run_test():
+            await app.action_quit()
+
+        assert fake.shutdown_count == 1
 
     asyncio.run(run_app())
 
