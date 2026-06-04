@@ -52,6 +52,14 @@ Output format:
 - For each execution step: "purpose → action → result → next step".
 - For each failure step: "cause → rollback status → alternative plan"."""
 
+SUBAGENT_AWARENESS = """Sub-agent delegation:
+- Use the sub_agent tool when a sub-task would produce large search/log/tool output, needs independent investigation, or benefits from a specialized role.
+- Available built-in roles: general-purpose, code-reviewer, debugger, test-runner.
+- The sub-agent task must be self-contained; do not assume it has the full parent conversation.
+- Pass only selected context that is necessary for the delegated task.
+- Sub-agent results are summaries, not ground truth. Verify important findings before acting on them.
+- Do not use sub_agent for trivial single-file reads, small direct edits, or questions that need immediate user clarification."""
+
 _MODE_SECTIONS: dict[str, str] = {
     "normal": MODE_NORMAL,
     "plan": MODE_PLAN,
@@ -84,6 +92,7 @@ def assemble_system_prompt(
         BASE_SYSTEM.strip(),
         mode_section.strip(),
         SAFETY_POLICY.strip(),
+        SUBAGENT_AWARENESS.strip(),
     ]
     if skill_injection:
         sections.append(f"Skill planning guidance:\n{skill_injection.strip()}")

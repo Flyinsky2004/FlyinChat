@@ -35,6 +35,8 @@ class Conversation:
     compacted_message_count: int = 0
     current_turn: int = 0
     status: str = "active"
+    parent_conversation_id: str = ""
+    agent_type: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -50,6 +52,7 @@ class Message:
     subtype: str = "normal"
     tool_call_id: str | None = None
     meta: str = "{}"
+    agent_type: str = ""
 
 
 @dataclass(frozen=True)

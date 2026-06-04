@@ -21,6 +21,7 @@ from .permission_request import (
     sanitize_args,
 )
 from .plan_tools import EnterPlanModeTool, ExitPlanModeTool, TodoWriteTool
+from .sub_agent_tool import SubAgentTool
 from .web_tools import WebFetchTool, WebSearchTool
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "PermissionRequest",
     "PermissionRequestStore",
     "RequestStatus",
+    "SubAgentTool",
     "TodoWriteTool",
     "ToolContext",
     "ToolExecutor",

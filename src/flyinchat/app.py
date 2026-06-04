@@ -31,6 +31,7 @@ from .paths import AppPaths
 from .prompt_assembler import mode_int_to_str
 from .query_engine import QueryEngine, QueryEngineConfig, TurnEvent
 from .skills import SkillRegistry
+from .subagents import SubAgentRegistry
 from .storage import (
     PROVIDER_PRESETS,
     add_message,
@@ -65,6 +66,7 @@ from .tools import (
     GlobTool,
     GrepTool,
     PermissionContext,
+    SubAgentTool,
     TodoWriteTool,
     ToolContext,
     ToolExecutor,
@@ -153,6 +155,7 @@ class FlyinChatApp(App[None]):
         self._mode: int = 0  # 0=normal, 1=auto_edit, 2=yolo, 3=plan
         self._mcp_manager: MCPManager | None = None
         self._skill_registry: SkillRegistry | None = None
+        self._subagent_registry: SubAgentRegistry | None = None
         self._pending_mcp_action_server: str | None = None
         self._todos: list[dict] = []
         self._message_widgets: dict[str, ChatMessage] = {}
@@ -368,7 +371,9 @@ class FlyinChatApp(App[None]):
     def _init_tools(self) -> None:
         workspace = self.paths.project_dir.parent if self.paths is not None else Path.cwd()
         permission = PermissionContext(
-            allowed_tools={"file_read", "glob", "grep", "todo_write", "ask_user_question"},
+            allowed_tools={
+                "file_read", "glob", "grep", "todo_write", "ask_user_question", "sub_agent",
+            },
             ask_tools={
                 "file_write", "file_edit", "bash",
                 "web_fetch", "web_search",
@@ -386,6 +391,8 @@ class FlyinChatApp(App[None]):
         )
         self._skill_registry = SkillRegistry(workspace)
         self._skill_registry.refresh()
+        self._subagent_registry = SubAgentRegistry(workspace)
+        self._subagent_registry.refresh()
         self._tool_registry = ToolRegistry()
         self._tool_registry.register(FileReadTool())
         self._tool_registry.register(FileWriteTool())
@@ -400,6 +407,16 @@ class FlyinChatApp(App[None]):
         self._tool_registry.register(EnterPlanModeTool())
         self._tool_registry.register(ExitPlanModeTool())
         self._tool_executor = ToolExecutor(self._tool_registry)
+        if self.paths is not None and self._subagent_registry is not None:
+            self._tool_registry.register(
+                SubAgentTool(
+                    config_path=self.paths.config_path,
+                    chat_path=self.paths.chat_path,
+                    subagent_registry=self._subagent_registry,
+                    tool_registry=self._tool_registry,
+                    tool_executor=self._tool_executor,
+                )
+            )
         self._apply_mode_permissions()
         if self._query_engine is not None:
             self._query_engine.configure_tools(
@@ -2148,7 +2165,7 @@ class FlyinChatApp(App[None]):
         if self._mode == 0:  # normal
             p.allowed_tools = {
                 "file_read", "glob", "grep",
-                "todo_write", "ask_user_question",
+                "todo_write", "ask_user_question", "sub_agent",
             }
             p.ask_tools = {
                 "file_write", "file_edit", "bash",
@@ -2159,7 +2176,7 @@ class FlyinChatApp(App[None]):
         elif self._mode == 1:  # auto_edit
             p.allowed_tools = {
                 "file_read", "file_write", "file_edit",
-                "glob", "grep", "todo_write", "ask_user_question",
+                "glob", "grep", "todo_write", "ask_user_question", "sub_agent",
             }
             p.ask_tools = {
                 "bash", "web_fetch", "web_search",
@@ -2173,7 +2190,7 @@ class FlyinChatApp(App[None]):
         elif self._mode == 3:  # plan
             p.allowed_tools = {
                 "file_read", "glob", "grep",
-                "todo_write", "ask_user_question",
+                "todo_write", "ask_user_question", "sub_agent",
                 "enter_plan_mode", "exit_plan_mode",
             }
             p.ask_tools = {"bash", "web_fetch", "web_search"}

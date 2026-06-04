@@ -891,6 +891,10 @@ class QueryEngine:
             "executing tool",
             extra={"turn_id": turn_id, "tool_name": tool_name, "tool_use_id": tool_use_id},
         )
+        self._tool_context.turn_state = {
+            **self._tool_context.turn_state,
+            "conversation_id": self.config.conversation_id,
+        }
         result = await self._tool_executor.execute(tool_name, tool_input, self._tool_context)
 
         if result.error_code == PERMISSION_REQUIRED:

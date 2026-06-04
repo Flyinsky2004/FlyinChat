@@ -315,6 +315,8 @@ def create_conversation(chat_path: Path, *, title: str) -> Conversation:
         "compacted_message_count": 0,
         "current_turn": 0,
         "status": "active",
+        "parent_conversation_id": "",
+        "agent_type": "",
         "created_at": now,
         "updated_at": now,
     }
@@ -322,6 +324,56 @@ def create_conversation(chat_path: Path, *, title: str) -> Conversation:
     next_store = {**store, "conversations": [*store["conversations"], conversation]}
     _write_json(chat_path, next_store)
     return _conversation_from_dict(conversation)
+
+
+def create_subagent_conversation(
+    chat_path: Path,
+    *,
+    parent_conversation_id: str,
+    agent_type: str,
+    title: str,
+) -> Conversation:
+    if not parent_conversation_id.strip():
+        raise ValueError("Parent conversation ID is required")
+    if not agent_type.strip():
+        raise ValueError("Agent type is required")
+    if not title.strip():
+        raise ValueError("Conversation title is required")
+
+    store = _load_chat_store(chat_path)
+    if not any(conversation["id"] == parent_conversation_id for conversation in store["conversations"]):
+        raise ValueError("Parent conversation not found")
+
+    now = _now_iso()
+    conversation = {
+        "id": str(uuid4()),
+        "title": title,
+        "total_output_tokens": 0,
+        "last_input_tokens": 0,
+        "compacted_message_count": 0,
+        "current_turn": 0,
+        "status": "active",
+        "parent_conversation_id": parent_conversation_id,
+        "agent_type": agent_type,
+        "created_at": now,
+        "updated_at": now,
+    }
+    next_store = {**store, "conversations": [*store["conversations"], conversation]}
+    _write_json(chat_path, next_store)
+    return _conversation_from_dict(conversation)
+
+
+def list_subagent_conversations(
+    chat_path: Path, *, parent_conversation_id: str
+) -> list[Conversation]:
+    store = _load_chat_store(chat_path)
+    rows = [
+        conversation
+        for conversation in store["conversations"]
+        if conversation.get("parent_conversation_id") == parent_conversation_id
+    ]
+    rows = sorted(rows, key=lambda item: (item["updated_at"], item["created_at"]), reverse=True)
+    return [_conversation_from_dict(row) for row in rows]
 
 
 def get_conversation(chat_path: Path, *, conversation_id: str) -> Conversation | None:
@@ -357,6 +409,7 @@ def add_message(
     subtype: str = "normal",
     tool_call_id: str | None = None,
     meta: str = "{}",
+    agent_type: str = "",
 ) -> Message:
     if role not in _MESSAGE_ROLES:
         raise ValueError(f"Unsupported message role: {role}")
@@ -378,6 +431,7 @@ def add_message(
         "subtype": subtype,
         "tool_call_id": tool_call_id,
         "meta": meta,
+        "agent_type": agent_type,
     }
     conversations = [
         {**conversation, "updated_at": now}
@@ -443,6 +497,7 @@ def add_message_with_turn(
     content: str,
     tool_call_id: str | None = None,
     meta: str = "{}",
+    agent_type: str = "",
 ) -> Message:
     return add_message(
         chat_path,
@@ -453,6 +508,7 @@ def add_message_with_turn(
         subtype=subtype,
         tool_call_id=tool_call_id,
         meta=meta,
+        agent_type=agent_type,
     )
 
 
@@ -765,6 +821,8 @@ def _normalize_conversation_dict(row: dict[str, Any]) -> dict[str, Any]:
         "compacted_message_count": int(row.get("compacted_message_count") or 0),
         "current_turn": int(row.get("current_turn") or 0),
         "status": str(row.get("status") or "active"),
+        "parent_conversation_id": str(row.get("parent_conversation_id") or ""),
+        "agent_type": str(row.get("agent_type") or ""),
         "created_at": str(row.get("created_at") or now),
         "updated_at": str(row.get("updated_at") or now),
     }
@@ -782,6 +840,7 @@ def _normalize_message_dict(row: dict[str, Any]) -> dict[str, Any]:
         "subtype": str(row.get("subtype") or "normal"),
         "tool_call_id": row.get("tool_call_id"),
         "meta": str(row.get("meta") or "{}"),
+        "agent_type": str(row.get("agent_type") or ""),
     }
 
 
@@ -821,6 +880,8 @@ def _conversation_from_dict(row: dict[str, Any]) -> Conversation:
         compacted_message_count=int(row["compacted_message_count"]),
         current_turn=int(row["current_turn"]),
         status=row["status"],
+        parent_conversation_id=row["parent_conversation_id"],
+        agent_type=row["agent_type"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -837,4 +898,5 @@ def _message_from_dict(row: dict[str, Any]) -> Message:
         subtype=row["subtype"],
         tool_call_id=row["tool_call_id"],
         meta=row["meta"],
+        agent_type=row["agent_type"],
     )

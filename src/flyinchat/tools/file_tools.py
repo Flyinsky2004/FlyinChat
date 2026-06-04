@@ -39,6 +39,8 @@ class FileReadTool:
         roots = context.permission.allowed_read_roots or [context.workspace_root]
         if not path_allowed(p, roots):
             return PermissionDecision(False, f"read not allowed: {p}")
+        if context.turn_state.get("deny_sensitive_reads") and _is_sensitive_path(p):
+            return PermissionDecision(False, f"sensitive file read not allowed: {p.name}")
         return PermissionDecision(True)
 
     async def run(self, tool_input: Dict[str, Any], context: ToolContext) -> ToolResult:
@@ -120,3 +122,14 @@ class FileWriteTool:
             content=f"wrote file: {p}",
             data={"path": str(p), "bytes_written": len(content.encode("utf-8"))},
         )
+
+
+def _is_sensitive_path(path: Path) -> bool:
+    name = path.name.lower()
+    if name == ".env" or name.startswith(".env."):
+        return True
+    sensitive_suffixes = (".pem", ".key", ".p12", ".pfx")
+    if name.endswith(sensitive_suffixes):
+        return True
+    sensitive_parts = {".ssh", "credentials", "tokens", "secrets"}
+    return any(part.lower() in sensitive_parts for part in path.parts)
